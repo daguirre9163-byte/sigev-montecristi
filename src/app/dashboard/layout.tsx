@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { signOut } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { useUserRole } from "@/hooks/useUserRole";
+import { Menu, X } from "lucide-react";
 
 export default function DashboardLayout({
   children,
@@ -15,10 +16,12 @@ export default function DashboardLayout({
 }) {
 
   const { user, loading } = useAuth();
-
   const router = useRouter();
-
   const role = useUserRole();
+
+  // ✅ estado sidebar móvil
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
 
   useEffect(() => {
 
@@ -30,6 +33,7 @@ export default function DashboardLayout({
 
   }, [user, loading, router]);
 
+
   const handleLogout = async () => {
 
     await signOut(auth);
@@ -38,22 +42,51 @@ export default function DashboardLayout({
 
   };
 
-  if (loading) return <div className="p-6">Cargando...</div>;
+
+  if (loading)
+    return <div className="p-6">Cargando...</div>;
+
 
   return (
 
     <div className="flex min-h-screen bg-gray-100">
 
+
       {/* SIDEBAR */}
 
-      <aside className="hidden md:flex flex-col w-64 bg-green-700 text-white">
+      <aside
+        className={`
+          fixed z-40 top-0 left-0 h-full w-64 bg-green-700 text-white flex flex-col
+          transform transition-transform duration-300
 
-        <div className="p-6 text-xl font-bold border-b border-green-600">
-          SIG 
-          "Montecristi Crece en Valores"
+          ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}
+
+          md:translate-x-0 md:static
+        `}
+      >
+
+
+        {/* HEADER SIDEBAR */}
+
+        <div className="p-6 text-xl font-bold border-b border-green-600 flex justify-between items-center">
+
+          SIGEV
+
+          {/* botón cerrar en móvil */}
+          <button
+            className="md:hidden"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <X size={24} />
+          </button>
+
         </div>
 
-        <nav className="flex-1 p-4 space-y-6">
+
+        {/* MENÚ */}
+
+        <nav className="flex-1 p-4 space-y-6 overflow-y-auto">
+
 
           {/* CONTROL GENERAL */}
 
@@ -61,19 +94,28 @@ export default function DashboardLayout({
 
             <MenuSection title="CONTROL GENERAL">
 
-              <MenuItem href={`/dashboard/${role}`}>
+              <MenuItem
+                href={`/dashboard/${role}`}
+                onClick={() => setSidebarOpen(false)}
+              >
                 Dashboard
               </MenuItem>
 
               {role === "admin" && (
 
-                <MenuItem href="/dashboard/semanas">
+                <MenuItem
+                  href="/dashboard/semanas"
+                  onClick={() => setSidebarOpen(false)}
+                >
                   Gestión de Semanas
                 </MenuItem>
 
               )}
 
-              <MenuItem href="/dashboard/reportesinstitucionales">
+              <MenuItem
+                href="/dashboard/reportesinstitucionales"
+                onClick={() => setSidebarOpen(false)}
+              >
                 Reportes Institucionales
               </MenuItem>
 
@@ -81,23 +123,31 @@ export default function DashboardLayout({
 
           )}
 
+
           {/* GESTIÓN DE EQUIPO */}
 
           {role === "admin" && (
 
             <MenuSection title="GESTIÓN DE EQUIPO">
 
-              <MenuItem href="/dashboard/usuarios">
+              <MenuItem
+                href="/dashboard/usuarios"
+                onClick={() => setSidebarOpen(false)}
+              >
                 Técnicos / Usuarios
               </MenuItem>
 
-              <MenuItem href="/dashboard/admin/comunidades">
+              <MenuItem
+                href="/dashboard/admin/comunidades"
+                onClick={() => setSidebarOpen(false)}
+              >
                 Comunidades
               </MenuItem>
 
             </MenuSection>
 
           )}
+
 
           {/* MI OPERACIÓN */}
 
@@ -107,25 +157,40 @@ export default function DashboardLayout({
 
               {role === "admin" && (
 
-                <MenuItem href="/dashboard/tecnico">
+                <MenuItem
+                  href="/dashboard/tecnico"
+                  onClick={() => setSidebarOpen(false)}
+                >
                   Dashboard Técnico
                 </MenuItem>
 
               )}
 
-              <MenuItem href="/dashboard/participantes">
+              <MenuItem
+                href="/dashboard/participantes"
+                onClick={() => setSidebarOpen(false)}
+              >
                 Participantes
               </MenuItem>
 
-              <MenuItem href="/dashboard/planificacion">
+              <MenuItem
+                href="/dashboard/planificacion"
+                onClick={() => setSidebarOpen(false)}
+              >
                 Planificación
               </MenuItem>
 
-              <MenuItem href="/dashboard/seguimiento">
+              <MenuItem
+                href="/dashboard/seguimiento"
+                onClick={() => setSidebarOpen(false)}
+              >
                 Seguimiento
               </MenuItem>
 
-              <MenuItem href="/dashboard/reportes">
+              <MenuItem
+                href="/dashboard/reportes"
+                onClick={() => setSidebarOpen(false)}
+              >
                 Mis Reportes
               </MenuItem>
 
@@ -134,6 +199,7 @@ export default function DashboardLayout({
           )}
 
         </nav>
+
 
         {/* LOGOUT */}
 
@@ -150,19 +216,43 @@ export default function DashboardLayout({
 
       </aside>
 
+
       {/* CONTENIDO */}
 
-      <main className="flex-1 p-6">
+      <div className="flex-1 flex flex-col">
 
-        {children}
 
-      </main>
+        {/* HEADER MÓVIL */}
+
+        <header className="bg-white shadow p-4 md:hidden">
+
+          <button
+            onClick={() => setSidebarOpen(true)}
+          >
+            <Menu size={28} />
+          </button>
+
+        </header>
+
+
+        {/* MAIN */}
+
+        <main className="flex-1 p-6">
+
+          {children}
+
+        </main>
+
+
+      </div>
+
 
     </div>
 
   );
 
 }
+
 
 /* COMPONENTES AUXILIARES */
 
@@ -193,15 +283,18 @@ function MenuSection({
 
 }
 
+
 function MenuItem({
   href,
-  children
+  children,
+  onClick
 }: any) {
 
   return (
 
     <Link
       href={href}
+      onClick={onClick}
       className="block p-2 rounded hover:bg-green-600 transition"
     >
       {children}
