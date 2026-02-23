@@ -72,6 +72,7 @@ export default function TecnicoDashboard() {
         //---------------------------------------------------
         // Comunidades
         //---------------------------------------------------
+        if (!user)return;
 
         const comunidadesData =
           await getComunidadesByTecnico(user.uid);
