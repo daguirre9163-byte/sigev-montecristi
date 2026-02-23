@@ -155,7 +155,6 @@ export default function DashboardLayout({
 
             <MenuSection title="MI OPERACIÓN">
 
-              {role === "admin" && (
 
                 <MenuItem
                   href="/dashboard/tecnico"
@@ -164,7 +163,7 @@ export default function DashboardLayout({
                   Dashboard Técnico
                 </MenuItem>
 
-              )}
+            
 
               <MenuItem
                 href="/dashboard/participantes"
