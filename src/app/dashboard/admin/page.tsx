@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import L from "leaflet";
+import * as L from "leaflet";
 
 import { db } from "@/lib/firebase";
 
