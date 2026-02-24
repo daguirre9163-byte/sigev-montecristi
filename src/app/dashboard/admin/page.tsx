@@ -1,321 +1,342 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
+import L from "leaflet";
 
 import { db } from "@/lib/firebase";
 
 import {
   collection,
-  getDocs,
-  query,
-  where
+  getDocs
 } from "firebase/firestore";
 
-import { getSemanaActiva } from "@/lib/getSemanaActiva";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  CartesianGrid,
+  PieChart,
+  Pie,
+  Cell
+} from "recharts";
 
-import * as XLSX from "xlsx";
-import { saveAs } from "file-saver";
+import {
+  Users,
+  MapPin,
+  ClipboardList,
+  CheckCircle
+} from "lucide-react";
 
-import { useRouter } from "next/navigation";
 
-export default function DashboardAdmin() {
+// -------------------------
+// LEAFLET dinámico
+// -------------------------
 
-  const router = useRouter();
+const MapContainer = dynamic(
+  () => import("react-leaflet").then(m => m.MapContainer),
+  { ssr: false }
+);
 
-  const [loading, setLoading] =
-    useState(true);
+const TileLayer = dynamic(
+  () => import("react-leaflet").then(m => m.TileLayer),
+  { ssr: false }
+);
 
-  const [semana, setSemana] =
-    useState<any>(null);
+const Marker = dynamic(
+  () => import("react-leaflet").then(m => m.Marker),
+  { ssr: false }
+);
 
-  const [tecnicos, setTecnicos] =
-    useState<any[]>([]);
+const Popup = dynamic(
+  () => import("react-leaflet").then(m => m.Popup),
+  { ssr: false }
+);
 
-  const [kpi, setKpi] =
-    useState({
+const GeoJSON = dynamic(
+  () => import("react-leaflet").then(m => m.GeoJSON),
+  { ssr: false }
+);
 
-      tecnicos: 0,
+const Circle = dynamic(
+  () => import("react-leaflet").then(m => m.Circle),
+  { ssr: false }
+);
 
-      comunidades: 0,
 
-      participantes: 0,
+// -------------------------
+// ICONOS
+// -------------------------
 
-      planificaciones: 0,
+const iconActivo = new L.Icon({
+  iconUrl: "https://maps.google.com/mapfiles/ms/icons/green-dot.png",
+  iconSize: [32, 32],
+});
 
-      seguimientos: 0,
+const iconInactivo = new L.Icon({
+  iconUrl: "https://maps.google.com/mapfiles/ms/icons/red-dot.png",
+  iconSize: [32, 32],
+});
 
-      cumplimiento: 0
 
-    });
+// -------------------------
+// COLORES GRAFICOS
+// -------------------------
 
-  const [alertas, setAlertas] =
-    useState<string[]>([]);
+const COLORS = [
+  "#2563eb",
+  "#16a34a",
+  "#dc2626",
+  "#ea580c",
+  "#9333ea",
+  "#0891b2",
+  "#ca8a04"
+];
 
-  //-------------------------------------------------
-  // LOAD
-  //-------------------------------------------------
+
+// -------------------------
+// COMPONENTE PRINCIPAL
+// -------------------------
+
+export default function DashboardAdminPowerBI() {
+
+  const [loading, setLoading] = useState(true);
+
+  const [mapReady, setMapReady] = useState(false);
+
+  const [stats, setStats] = useState<any>({});
+
+  const [tecnicos, setTecnicos] = useState<any[]>([]);
+
+  const [comunidades, setComunidades] = useState<any[]>([]);
+
+  const [chartCumplimiento, setChartCumplimiento] = useState<any[]>([]);
+
+  const [chartParticipantes, setChartParticipantes] = useState<any[]>([]);
+
+  const [chartPie, setChartPie] = useState<any[]>([]);
+
+  const [chartSemanal, setChartSemanal] = useState<any[]>([]);
+
+  const [geoMontecristi, setGeoMontecristi] = useState<any>(null);
+
 
   useEffect(() => {
 
-    cargarDashboard();
+    loadDashboard();
+
+    setMapReady(true);
 
   }, []);
 
-  async function cargarDashboard() {
+
+  // -------------------------
+  // LOAD DATA
+  // -------------------------
+
+  async function loadDashboard() {
 
     setLoading(true);
 
-    const semanaActiva =
-      await getSemanaActiva();
+    const usuariosSnap = await getDocs(collection(db, "usuarios"));
 
-    setSemana(semanaActiva);
+    const comunidadesSnap = await getDocs(collection(db, "comunidades"));
 
-    const usersSnap =
-      await getDocs(
-        collection(db, "usuarios")
+    const participantesSnap = await getDocs(collection(db, "participantes"));
+
+    const seguimientosSnap = await getDocs(collection(db, "seguimientos"));
+
+    const planSnap = await getDocs(collection(db, "planificaciones"));
+
+    const semanasSnap = await getDocs(collection(db, "semanas"));
+
+    const geo = await fetch("/geo/montecristi.geojson");
+
+    const geoData = await geo.json();
+
+    setGeoMontecristi(geoData);
+
+
+    //-------------------------
+    // TECNICOS
+    //-------------------------
+
+    const tecnicosData = usuariosSnap.docs
+      .map(doc => {
+
+        const data = doc.data() as any;
+
+        return {
+          id: doc.id,
+          nombre: data.nombre || "",
+          email: data.email || "",
+          rol: data.rol || ""
+        };
+
+      })
+      .filter(u =>
+        u.rol === "tecnico" ||
+        u.rol === "admin"
       );
 
-    const lista = [];
+    setTecnicos(tecnicosData);
 
-    let totalComunidades = 0;
-    let totalParticipantes = 0;
-    let totalPlan = 0;
-    let totalSeg = 0;
 
-    const alertasTemp = [];
+    //-------------------------
+    // COMUNIDADES
+    //-------------------------
 
-    //-------------------------------------------------
-    // RECORRER TECNICOS
-    //-------------------------------------------------
+    const comunidadesData =
+      comunidadesSnap.docs.map(doc => {
 
-    for (const userDoc of usersSnap.docs) {
+        const data = doc.data() as any;
 
-      const user =
-        userDoc.data();
-
-     const esTecnicoOperativo =
-  user.estado === "activo" &&
-  (
-    user.rol === "tecnico" ||
-    user.rol === "admin"
-  );
-
-if (!esTecnicoOperativo)
-  continue;
-      const tecnicoId =
-        userDoc.id;
-
-      //-------------------------------------------------
-      // comunidades
-      //-------------------------------------------------
-
-      const comunidadesSnap =
-        await getDocs(
-          query(
-            collection(db, "comunidades"),
-            where(
-              "tecnicoId",
-              "==",
-              tecnicoId
-            )
-          )
-        );
-
-      const comunidadesCount =
-        comunidadesSnap.size;
-
-      totalComunidades +=
-        comunidadesCount;
-
-      //-------------------------------------------------
-      // participantes
-      //-------------------------------------------------
-
-      const partSnap =
-        await getDocs(
-          query(
-            collection(db, "participantes"),
-            where(
-              "tecnicoId",
-              "==",
-              tecnicoId
-            ),
-            where(
-              "estado",
-              "==",
-              "activo"
-            )
-          )
-        );
-
-      const participantesCount =
-        partSnap.size;
-
-      totalParticipantes +=
-        participantesCount;
-
-      //-------------------------------------------------
-      // planificacion
-      //-------------------------------------------------
-
-      let planEnviado = false;
-
-      if (semanaActiva) {
-
-        const planSnap =
-          await getDocs(
-            query(
-              collection(db, "planificaciones"),
-              where(
-                "tecnicoId",
-                "==",
-                tecnicoId
-              ),
-              where(
-                "semanaId",
-                "==",
-                semanaActiva.id
-              ),
-              where(
-                "estado",
-                "==",
-                "enviado"
-              )
-            )
-          );
-
-        planEnviado =
-          !planSnap.empty;
-
-        if (planEnviado)
-          totalPlan++;
-        else
-          alertasTemp.push(
-            `${user.nombre || user.email} sin planificación`
-          );
-
-      }
-
-      //-------------------------------------------------
-      // seguimiento
-      //-------------------------------------------------
-
-      let segEnviado = false;
-
-      if (semanaActiva) {
-
-        const segSnap =
-          await getDocs(
-            query(
-              collection(db, "seguimientos"),
-              where(
-                "tecnicoId",
-                "==",
-                tecnicoId
-              ),
-              where(
-                "semanaId",
-                "==",
-                semanaActiva.id
-              ),
-              where(
-                "estado",
-                "==",
-                "enviado"
-              )
-            )
-          );
-
-        segEnviado =
-          !segSnap.empty;
-
-        if (segEnviado)
-          totalSeg++;
-        else
-          alertasTemp.push(
-            `${user.nombre || user.email} sin seguimiento`
-          );
-
-      }
-
-      //-------------------------------------------------
-      // cumplimiento
-      //-------------------------------------------------
-
-      let cumplimiento = 0;
-
-      if (planEnviado)
-        cumplimiento += 50;
-
-      if (segEnviado)
-        cumplimiento += 50;
-
-      lista.push({
-
-        id: tecnicoId,
-
-        nombre:
-          user.nombre ||
-          user.email,
-
-        comunidades:
-          comunidadesCount,
-
-        participantes:
-          participantesCount,
-
-        planificacion:
-          planEnviado,
-
-        seguimiento:
-          segEnviado,
-
-        cumplimiento
+        return {
+          id: doc.id,
+          nombre: data.nombre || "",
+          lat: data.lat || null,
+          lng: data.lng || null,
+          tecnicoId: data.tecnicoId || "",
+          activa: data.activa || false
+        };
 
       });
 
-    }
+    setComunidades(comunidadesData);
 
-    //-------------------------------------------------
-    // KPI
-    //-------------------------------------------------
 
-    const cumplimientoGlobal =
-      lista.length > 0
-        ? Math.round(
-            lista.reduce(
-              (acc, t) =>
-                acc + t.cumplimiento,
-              0
-            ) / lista.length
-          )
-        : 0;
+    //-------------------------
+    // STATS
+    //-------------------------
 
-    setTecnicos(lista);
+    setStats({
 
-    setKpi({
+      tecnicos: tecnicosData.length,
 
-      tecnicos:
-        lista.length,
+      comunidades: comunidadesData.length,
 
-      comunidades:
-        totalComunidades,
+      comunidadesActivas:
+        comunidadesData.filter(c => c.activa).length,
 
-      participantes:
-        totalParticipantes,
+      participantes: participantesSnap.size,
 
-      planificaciones:
-        totalPlan,
+      seguimientos: seguimientosSnap.size,
 
-      seguimientos:
-        totalSeg,
-
-      cumplimiento:
-        cumplimientoGlobal
+      planificaciones: planSnap.size
 
     });
 
-    setAlertas(alertasTemp);
+
+    //-------------------------
+    // CUMPLIMIENTO
+    //-------------------------
+
+    const cumplimientoData =
+      tecnicosData.map(tecnico => {
+
+        const plan =
+          planSnap.docs.find(
+            p => (p.data() as any).tecnicoId === tecnico.id
+          );
+
+        const seg =
+          seguimientosSnap.docs.find(
+            s => (s.data() as any).tecnicoId === tecnico.id
+          );
+
+        let cumplimiento = 0;
+
+        if (plan && seg) cumplimiento = 100;
+        else if (plan || seg) cumplimiento = 50;
+
+        return {
+
+          nombre:
+            tecnico.nombre ||
+            tecnico.email,
+
+          cumplimiento
+
+        };
+
+      });
+
+    setChartCumplimiento(cumplimientoData);
+
+
+    //-------------------------
+    // PARTICIPANTES POR COMUNIDAD
+    //-------------------------
+
+    setChartParticipantes(
+
+      comunidadesData.map(com => ({
+
+        nombre: com.nombre,
+
+        participantes:
+          participantesSnap.docs.filter(
+            p => (p.data() as any).comunidadId === com.id
+          ).length
+
+      }))
+
+    );
+
+
+    //-------------------------
+    // PIE TECNICO
+    //-------------------------
+
+    setChartPie(
+
+      tecnicosData.map(t => ({
+
+        name: t.nombre || t.email,
+
+        value:
+          participantesSnap.docs.filter(
+            p => (p.data() as any).tecnicoId === t.id
+          ).length
+
+      }))
+
+    );
+
+
+    //-------------------------
+    // HISTORICO
+    //-------------------------
+
+    setChartSemanal(
+
+      semanasSnap.docs.map(s => {
+
+        const id = s.id;
+
+        return {
+
+          semana: id,
+
+          planificaciones:
+            planSnap.docs.filter(
+              p => (p.data() as any).semanaId === id
+            ).length,
+
+          seguimientos:
+            seguimientosSnap.docs.filter(
+              s => (s.data() as any).semanaId === id
+            ).length
+
+        };
+
+      })
+
+    );
+
 
     setLoading(false);
 
@@ -386,11 +407,12 @@ if (!esTecnicoOperativo)
   //-------------------------------------------------
 
   if (loading)
-    return (
-      <div className="p-6">
-        Cargando panel admin...
-      </div>
-    );
+    return <div className="p-6">Cargando Dashboard...</div>;
+
+
+  // -------------------------
+  // UI
+  // -------------------------
 
   return (
 
@@ -413,127 +435,202 @@ if (!esTecnicoOperativo)
 
       {/* KPI */}
 
-      <div className="grid grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
 
-        <KPI titulo="Técnicos" valor={kpi.tecnicos} />
+        <KPI title="Técnicos" value={stats.tecnicos} icon={<Users />} color="bg-blue-500" />
 
-        <KPI titulo="Comunidades" valor={kpi.comunidades} />
+        <KPI title="Comunidades" value={stats.comunidades} icon={<MapPin />} color="bg-green-500" />
 
-        <KPI titulo="Participantes" valor={kpi.participantes} />
+        <KPI title="Activas" value={stats.comunidadesActivas} icon={<MapPin />} color="bg-emerald-600" />
 
-        <KPI titulo="Planificaciones" valor={kpi.planificaciones} />
+        <KPI title="Participantes" value={stats.participantes} icon={<Users />} color="bg-purple-500" />
 
-        <KPI titulo="Seguimientos" valor={kpi.seguimientos} />
+        <KPI title="Planificaciones" value={stats.planificaciones} icon={<ClipboardList />} color="bg-orange-500" />
 
-        <KPI titulo="% Cumplimiento" valor={`${kpi.cumplimiento}%`} />
+        <KPI title="Seguimientos" value={stats.seguimientos} icon={<CheckCircle />} color="bg-emerald-700" />
 
       </div>
 
-      {/* ALERTAS */}
 
-      {alertas.length > 0 && (
+      {/* MAPA */}
 
-        <div className="bg-red-100 p-4 rounded">
+      <Panel title="Mapa institucional">
 
-          <h2 className="font-bold text-red-700">
-            Alertas
-          </h2>
+        {mapReady && (
 
-          {alertas.map((a, i) => (
+          <MapContainer
+            center={[-1.05, -80.45]}
+            zoom={11}
+            style={{ height: 400 }}
+          >
 
-            <p key={i}>
-              ⚠ {a}
-            </p>
+            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/>
 
-          ))}
 
-        </div>
+            {geoMontecristi && (
 
-      )}
+              <GeoJSON
+                data={geoMontecristi}
+                style={{
+                  color: "#2563eb",
+                  weight: 2,
+                  fillOpacity: 0.1
+                }}
+              />
 
-      {/* TABLA */}
+            )}
 
-      <table className="w-full bg-white shadow rounded">
+            {comunidades.map(c => {
+                
+                if (!c.lat || !c.lng) return null;
 
-        <thead className="bg-gray-100">
+  const activa = c.activa === true;
 
-          <tr>
+  return (
 
-            <th className="p-2">
-              Técnico
-            </th>
+    <div key={c.id}>
 
-            <th className="p-2">
-              Comunidades
-            </th>
+      {/* CIRCULO GRANDE Y VISIBLE */}
+      <Circle
+        center={[c.lat, c.lng]}
+        radius={800}
+        pathOptions={{
+          color: activa ? "#00ff00" : "#ff0000",
+          fillColor: activa ? "#00ff00" : "#ff0000",
+          fillOpacity: 0.35,
+          weight: 3
+        }}
+      />
 
-            <th className="p-2">
-              Participantes
-            </th>
+      {/* MARCADOR */}
+      <Marker
+        position={[c.lat, c.lng]}
+        icon={activa ? iconActivo : iconInactivo}
+      >
 
-            <th className="p-2">
-              Planificación
-            </th>
+        <Popup>
 
-            <th className="p-2">
-              Seguimiento
-            </th>
+          <b>{c.nombre}</b>
 
-            <th className="p-2">
-              Cumplimiento
-            </th>
+          <br/>
 
-          </tr>
+          Estado:
+          <b style={{ color: activa ? "green" : "red" }}>
+            {activa ? " Participando" : " No participa"}
+          </b>
 
-        </thead>
+          <br/>
 
-        <tbody>
+          Técnico:
+          {
+            tecnicos.find(
+              t => t.id === c.tecnicoId
+            )?.nombre || "No asignado"
+          }
 
-          {tecnicos.map(t => (
+        </Popup>
 
-            <tr
-              key={t.id}
-              className="border-t cursor-pointer hover:bg-gray-50"
-              onClick={() =>
-                router.push(
-                  `/dashboard/admin/tecnico/${t.id}`
-                )
-              }
-            >
+      </Marker>
 
-              <td className="p-2 text-blue-600">
+    </div>
 
-                {t.nombre}
+  );
 
-              </td>
+})}
 
-              <td className="p-2 text-center">
-                {t.comunidades}
-              </td>
 
-              <td className="p-2 text-center">
-                {t.participantes}
-              </td>
+            
+          </MapContainer>
 
-              <td className="p-2 text-center">
-                {t.planificacion ? "🟢" : "🔴"}
-              </td>
+        )}
 
-              <td className="p-2 text-center">
-                {t.seguimiento ? "🟢" : "🔴"}
-              </td>
+      </Panel>
 
-              <td className="p-2 text-center font-bold">
-                {t.cumplimiento}%
-              </td>
+      {/* GRAFICOS */}
 
-            </tr>
+<div className="grid md:grid-cols-2 gap-4">
 
-          ))}
+  <Chart title="Cumplimiento técnico">
 
-        </tbody>
+    <BarChart data={chartCumplimiento}>
 
-      </table>
+      <CartesianGrid strokeDasharray="3 3"/>
+
+      <XAxis dataKey="nombre"/>
+
+      <YAxis/>
+
+      <Tooltip/>
+
+      <Bar dataKey="cumplimiento" fill="#16a34a"/>
+
+    </BarChart>
+
+  </Chart>
+
+
+  <Chart title="Participantes por comunidad">
+
+    <BarChart data={chartParticipantes}>
+
+      <CartesianGrid strokeDasharray="3 3"/>
+
+      <XAxis dataKey="nombre"/>
+
+      <YAxis/>
+
+      <Tooltip/>
+
+      <Bar dataKey="participantes" fill="#2563eb"/>
+
+    </BarChart>
+
+  </Chart>
+
+
+  <Chart title="Distribución por técnico">
+
+    <PieChart>
+
+      <Pie data={chartPie} dataKey="value">
+
+        {chartPie.map((_, i) => (
+
+          <Cell key={i} fill={COLORS[i % COLORS.length]}/>
+
+        ))}
+
+      </Pie>
+
+      <Tooltip/>
+
+    </PieChart>
+
+  </Chart>
+
+
+  <Chart title="Histórico semanal">
+
+    <BarChart data={chartSemanal}>
+
+      <CartesianGrid strokeDasharray="3 3"/>
+
+      <XAxis dataKey="semana"/>
+
+      <YAxis/>
+
+      <Tooltip/>
+
+      <Bar dataKey="planificaciones" fill="#2563eb"/>
+
+      <Bar dataKey="seguimientos" fill="#16a34a"/>
+
+    </BarChart>
+
+  </Chart>
+
+</div>
+
 
     </div>
 
@@ -541,22 +638,73 @@ if (!esTecnicoOperativo)
 
 }
 
-function KPI({ titulo, valor }: any) {
 
-  return (
+// -------------------------
 
-    <div className="bg-white p-4 rounded shadow">
+function KPI({title,value,icon,color}:any){
 
-      <p className="text-gray-500">
-        {titulo}
-      </p>
+return(
 
-      <h2 className="text-2xl font-bold text-blue-600">
-        {valor}
-      </h2>
+<div className={`text-white p-4 rounded shadow ${color}`}>
 
-    </div>
+<div className="flex justify-between">
 
-  );
+<div>
 
+<p>{title}</p>
+
+<h2 className="text-2xl font-bold">{value}</h2>
+
+</div>
+
+{icon}
+
+</div>
+
+</div>
+
+);
+
+}
+
+
+// -------------------------
+
+function Panel({title,children}:any){
+
+return(
+
+<div className="bg-white p-4 rounded shadow">
+
+<h2 className="font-semibold mb-2">{title}</h2>
+
+{children}
+
+</div>
+
+);
+
+}
+
+
+// -------------------------
+
+function Chart({title,children}:any){
+
+return(
+
+<div className="bg-white p-4 rounded shadow">
+
+<h3>{title}</h3>
+
+<ResponsiveContainer width="100%" height={300}>
+
+{children}
+
+</ResponsiveContainer>
+
+</div>
+
+
+);
 }
