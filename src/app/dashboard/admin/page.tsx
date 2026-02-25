@@ -425,7 +425,7 @@ export default function DashboardAdminPowerBI() {
       <div className="flex justify-between">
 
         <h1 className="text-2xl font-bold">
-          Dashboard Admin SIGEV
+          Dashboard Admin SIGEV v2
         </h1>
 
         <button
