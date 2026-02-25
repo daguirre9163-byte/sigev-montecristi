@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-
+import * as XLSX from "xlsx";
 
 
 import { db } from "@/lib/firebase";
