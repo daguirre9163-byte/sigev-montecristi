@@ -16,124 +16,125 @@ import {
 
 import { getComunidadesByTecnico } from "@/lib/getComunidadesByTecnico";
 
-
-
 export default function ParticipantesPage() {
 
   const { user } = useAuth();
 
   const [comunidades, setComunidades] = useState<any[]>([]);
   const [participantes, setParticipantes] = useState<any[]>([]);
+
   const [filtroComunidad, setFiltroComunidad] = useState("");
+  const [busqueda, setBusqueda] = useState("");
 
   const [editandoId, setEditandoId] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     nombres: "",
     apellidos: "",
-    familiaPlan: "",
-    genero: "",
     edad: "",
-    inclusion: "",
-    comunidadId: ""
+    genero: "",
+    familiaPlan: "",
+    inclusion: ""
   });
 
-  // CARGAR DATOS
-useEffect(() => {
-
-  if (!user) return;
-
-  cargarDatos(filtroComunidad);
-
-}, [user, filtroComunidad]);
-
-async function cargarDatos(comunidadId?: string) {
-
-  if (!user) return;
-
-  const comunidadesData =
-    await getComunidadesByTecnico(user.uid);
-
-  setComunidades(comunidadesData);
-
-  // CONSULTA BASE
-  let q = query(
-    collection(db, "participantes"),
-    where("tecnicoId", "==", user.uid),
-    where("estado", "==", "activo")
-  );
-
-  // FILTRO POR COMUNIDAD
-  if (comunidadId) {
-    q = query(
-      collection(db, "participantes"),
-      where("tecnicoId", "==", user.uid),
-      where("estado", "==", "activo"),
-      where("comunidadId", "==", comunidadId)
-    );
-  }
-
-  const snap = await getDocs(q);
-
-  const lista: any[] = [];
-
-  snap.forEach(doc =>
-    lista.push({ id: doc.id, ...doc.data() })
-  );
-
-  setParticipantes(lista);
-
-}
-
-  // GUARDAR PARTICIPANTE
-  async function guardarParticipante() {
+  // =========================
+  // CARGAR COMUNIDADES
+  // =========================
+  useEffect(() => {
 
     if (!user) return;
 
-    if (!form.nombres || !form.apellidos || !form.comunidadId) {
+    async function cargarComunidades() {
+      const data =
+        await getComunidadesByTecnico(user.uid);
+      setComunidades(data);
+    }
+
+    cargarComunidades();
+
+  }, [user]);
+
+  // =========================
+  // CARGAR PARTICIPANTES
+  // =========================
+  useEffect(() => {
+
+    if (!user || !filtroComunidad) return;
+
+    cargarParticipantes();
+
+  }, [user, filtroComunidad]);
+
+  async function cargarParticipantes() {
+
+    const q = query(
+      collection(db, "participantes"),
+      where("tecnicoId", "==", user.uid),
+      where("estado", "==", "activo"),
+      where("comunidadId", "==", filtroComunidad)
+    );
+
+    const snap = await getDocs(q);
+
+    const lista: any[] = [];
+
+    snap.forEach(doc =>
+      lista.push({ id: doc.id, ...doc.data() })
+    );
+
+    setParticipantes(lista);
+
+  }
+
+  // =========================
+  // GUARDAR
+  // =========================
+  async function guardarParticipante() {
+
+    if (!user || !filtroComunidad) {
+      alert("Seleccione una comunidad");
+      return;
+    }
+
+    if (!form.nombres || !form.apellidos) {
       alert("Complete los campos obligatorios");
       return;
     }
+
+    const data = {
+      ...form,
+      edad: Number(form.edad),
+      comunidadId: filtroComunidad,
+      tecnicoId: user.uid,
+      estado: "activo",
+      fechaRegistro: new Date()
+    };
 
     if (editandoId) {
 
       await updateDoc(
         doc(db, "participantes", editandoId),
-        {
-          ...form,
-          edad: Number(form.edad)
-        }
+        data
       );
 
       alert("Participante actualizado");
 
     } else {
 
-      await addDoc(collection(db, "participantes"), {
-
-        ...form,
-
-        edad: Number(form.edad),
-
-        tecnicoId: user.uid,
-
-        estado: "activo",
-
-        fechaRegistro: new Date()
-
-      });
+      await addDoc(collection(db, "participantes"), data);
 
       alert("Participante creado");
 
     }
 
     limpiarFormulario();
-
-    cargarDatos();
+    cargarParticipantes();
 
   }
 
+  // =========================
   // EDITAR
+  // =========================
   function editarParticipante(p: any) {
 
     setEditandoId(p.id);
@@ -141,30 +142,27 @@ async function cargarDatos(comunidadId?: string) {
     setForm({
       nombres: p.nombres,
       apellidos: p.apellidos,
-      familiaPlan: p.familiaPlan,
-      genero: p.genero,
       edad: p.edad,
-      inclusion: p.inclusion,
-      comunidadId: p.comunidadId
+      genero: p.genero,
+      familiaPlan: p.familiaPlan,
+      inclusion: p.inclusion
     });
 
   }
 
-  // ELIMINAR (borrado lógico)
+  // =========================
+  // ELIMINAR
+  // =========================
   async function eliminarParticipante(id: string) {
 
     if (!confirm("¿Eliminar participante?")) return;
 
     await updateDoc(
       doc(db, "participantes", id),
-      {
-        estado: "inactivo"
-      }
+      { estado: "inactivo" }
     );
 
-    alert("Participante eliminado");
-
-    cargarDatos();
+    cargarParticipantes();
 
   }
 
@@ -175,260 +173,257 @@ async function cargarDatos(comunidadId?: string) {
     setForm({
       nombres: "",
       apellidos: "",
-      familiaPlan: "",
-      genero: "",
       edad: "",
-      inclusion: "",
-      comunidadId: ""
+      genero: "",
+      familiaPlan: "",
+      inclusion: ""
     });
 
   }
+
+  // =========================
+  // FILTRO DE BUSQUEDA
+  // =========================
+  const participantesFiltrados = participantes.filter(p =>
+    `${p.nombres} ${p.apellidos}`
+      .toLowerCase()
+      .includes(busqueda.toLowerCase())
+  );
+
+  // =========================
+  // INDICADORES
+  // =========================
+  const total = participantesFiltrados.length;
+  const hombres = participantesFiltrados.filter(p => p.genero === "M").length;
+  const mujeres = participantesFiltrados.filter(p => p.genero === "F").length;
 
   return (
 
     <div className="space-y-6">
 
       <h1 className="text-2xl font-bold text-gray-800">
-        Gestión de Participantes
+        Participantes
       </h1>
 
-      {/* FORMULARIO */}
-      <div className="bg-white p-6 rounded-xl shadow space-y-4">
+      {/* ================= COMUNIDAD ================= */}
 
-        <h2 className="font-semibold">
-          {editandoId
-            ? "Editar participante"
-            : "Nuevo participante"}
-        </h2>
+      <div className="bg-white p-4 rounded-xl shadow">
 
-        <input
-          value={form.nombres}
-          placeholder="Nombres"
-          className="border p-2 w-full rounded"
-          onChange={e =>
-            setForm({
-              ...form,
-              nombres: e.target.value
-            })
-          }
-        />
-
-        <input
-          value={form.apellidos}
-          placeholder="Apellidos"
-          className="border p-2 w-full rounded"
-          onChange={e =>
-            setForm({
-              ...form,
-              apellidos: e.target.value
-            })
-          }
-        />
+        <label className="font-semibold block mb-2">
+          Seleccione comunidad
+        </label>
 
         <select
-          value={form.familiaPlan}
-          className="border p-2 w-full rounded"
-          onChange={e =>
-            setForm({
-              ...form,
-              familiaPlan: e.target.value
-            })
-          }
+          value={filtroComunidad}
+          onChange={e => setFiltroComunidad(e.target.value)}
+          className="border p-2 rounded w-full"
         >
-          <option value="">
-            Familia afiliada a PLAN
-          </option>
-          <option value="SI">SI</option>
-          <option value="NO">NO</option>
-        </select>
-
-        <select
-          value={form.genero}
-          className="border p-2 w-full rounded"
-          onChange={e =>
-            setForm({
-              ...form,
-              genero: e.target.value
-            })
-          }
-        >
-          <option value="">Genero</option>
-          <option value="M">Masculino</option>
-          <option value="F">Femenino</option>
-          <option value="O">Otro</option>
-        </select>
-
-        <input
-          value={form.edad}
-          type="number"
-          placeholder="Edad"
-          className="border p-2 w-full rounded"
-          onChange={e =>
-            setForm({
-              ...form,
-              edad: e.target.value
-            })
-          }
-        />
-
-        <select
-          value={form.inclusion}
-          className="border p-2 w-full rounded"
-          onChange={e =>
-            setForm({
-              ...form,
-              inclusion: e.target.value
-            })
-          }
-        >
-          <option value="">Inclusión</option>
-          <option value="Mz">Mestizo/a</option>
-          <option value="I">Indígena</option>
-          <option value="A">Afro</option>
-          <option value="Mn">Montubio/a</option>
-          <option value="O">Otro</option>
-        </select>
-
-        <select
-          value={form.comunidadId}
-          className="border p-2 w-full rounded"
-          onChange={e =>
-            setForm({
-              ...form,
-              comunidadId: e.target.value
-            })
-          }
-        >
-          <option value="">
-            Seleccione comunidad
-          </option>
+          <option value="">Seleccione...</option>
 
           {comunidades.map(c => (
             <option key={c.id} value={c.id}>
               {c.nombre}
             </option>
           ))}
+
         </select>
 
-        <div className="flex gap-2">
+      </div>
 
-          <button
-            onClick={guardarParticipante}
-            className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded"
-          >
-            {editandoId
-              ? "Actualizar"
-              : "Guardar"}
-          </button>
+      {/* ================= INDICADORES ================= */}
 
-          {editandoId && (
+      {filtroComunidad && (
 
-            <button
-              onClick={limpiarFormulario}
-              className="bg-gray-500 text-white px-4 py-2 rounded"
-            >
-              Cancelar
-            </button>
+        <div className="grid grid-cols-3 gap-4">
 
-          )}
+          <div className="bg-green-100 p-4 rounded-xl text-center">
+            <p>Total</p>
+            <p className="text-2xl font-bold">{total}</p>
+          </div>
+
+          <div className="bg-blue-100 p-4 rounded-xl text-center">
+            <p>Hombres</p>
+            <p className="text-2xl font-bold">{hombres}</p>
+          </div>
+
+          <div className="bg-pink-100 p-4 rounded-xl text-center">
+            <p>Mujeres</p>
+            <p className="text-2xl font-bold">{mujeres}</p>
+          </div>
 
         </div>
 
-      </div>
+      )}
 
-      {/* TABLA */}
-      <div className="bg-white p-6 rounded-xl shadow">
+      {/* ================= FORMULARIO ================= */}
 
-        <h2 className="font-semibold mb-4">
-          Lista de participantes
-        </h2>
+      {filtroComunidad && (
 
-        {/* FILTRO POR COMUNIDAD */}
-<div className="mb-4">
+        <div className="bg-white p-6 rounded-xl shadow space-y-4">
 
-  <select
-    value={filtroComunidad}
-    className="border p-2 rounded"
-    onChange={e =>
-      setFiltroComunidad(e.target.value)
-    }
-  >
-    <option value="">
-      Todas las comunidades
-    </option>
+          <h2 className="font-semibold">
+            {editandoId ? "Editar participante" : "Nuevo participante"}
+          </h2>
 
-    {comunidades.map(c => (
-      <option key={c.id} value={c.id}>
-        {c.nombre}
-      </option>
-    ))}
+          <input
+            placeholder="Nombres"
+            value={form.nombres}
+            className="border p-2 w-full rounded"
+            onChange={e =>
+              setForm({ ...form, nombres: e.target.value })
+            }
+          />
 
-  </select>
+          <input
+            placeholder="Apellidos"
+            value={form.apellidos}
+            className="border p-2 w-full rounded"
+            onChange={e =>
+              setForm({ ...form, apellidos: e.target.value })
+            }
+          />
 
-</div>
+          <input
+            type="number"
+            placeholder="Edad"
+            value={form.edad}
+            className="border p-2 w-full rounded"
+            onChange={e =>
+              setForm({ ...form, edad: e.target.value })
+            }
+          />
 
-        <table className="w-full border">
+          <select
+            value={form.genero}
+            className="border p-2 w-full rounded"
+            onChange={e =>
+              setForm({ ...form, genero: e.target.value })
+            }
+          >
+            <option value="">Genero</option>
+            <option value="M">Masculino</option>
+            <option value="F">Femenino</option>
+            <option value="O">Otro</option>
+          </select>
 
-          <thead className="bg-green-600 text-white">
+          {/* FAMILIA PLAN */}
+          <select
+            value={form.familiaPlan}
+            className="border p-2 w-full rounded"
+            onChange={e =>
+              setForm({ ...form, familiaPlan: e.target.value })
+            }
+          >
+            <option value="">Familia afiliada a PLAN</option>
+            <option value="SI">SI</option>
+            <option value="NO">NO</option>
+          </select>
 
-            <tr>
+          {/* INCLUSION */}
+          <select
+            value={form.inclusion}
+            className="border p-2 w-full rounded"
+            onChange={e =>
+              setForm({ ...form, inclusion: e.target.value })
+            }
+          >
+            <option value="">Inclusión</option>
+            <option value="Mz">Mestizo/a</option>
+            <option value="I">Indígena</option>
+            <option value="A">Afro</option>
+            <option value="Mn">Montubio/a</option>
+            <option value="O">Otro</option>
+          </select>
 
-              <th className="p-2">Nombre</th>
-              <th className="p-2">Apellido</th>
-              <th className="p-2">Edad</th>
-              <th className="p-2">Genero</th>
-              <th className="p-2">Inclusión</th>
-              <th className="p-2">Plan</th>
-              <th className="p-2">Acciones</th>
+          <button
+            onClick={guardarParticipante}
+            className="bg-green-600 text-white px-4 py-2 rounded"
+          >
+            {editandoId ? "Actualizar" : "Guardar"}
+          </button>
 
-            </tr>
+        </div>
 
-          </thead>
+      )}
 
-          <tbody>
+      {/* ================= BUSQUEDA ================= */}
 
-            {participantes.map(p => (
+      {filtroComunidad && (
 
-              <tr key={p.id} className="border-b">
+        <input
+          placeholder="Buscar participante..."
+          className="border p-2 w-full rounded"
+          value={busqueda}
+          onChange={e => setBusqueda(e.target.value)}
+        />
 
-                <td className="p-2">{p.nombres}</td>
-                <td className="p-2">{p.apellidos}</td>
-                <td className="p-2">{p.edad}</td>
-                <td className="p-2">{p.genero}</td>
-                <td className="p-2">{p.inclusion}</td>
-                <td className="p-2">{p.familiaPlan}</td>
+      )}
 
-                <td className="p-2 flex gap-2">
+      {/* ================= TABLA ================= */}
 
-                  <button
-                    onClick={() =>
-                      editarParticipante(p)
-                    }
-                    className="bg-blue-600 text-white px-2 py-1 rounded"
-                  >
-                    Editar
-                  </button>
+      {filtroComunidad && (
 
-                  <button
-                    onClick={() =>
-                      eliminarParticipante(p.id)
-                    }
-                    className="bg-red-600 text-white px-2 py-1 rounded"
-                  >
-                    Eliminar
-                  </button>
+        <div className="bg-white p-6 rounded-xl shadow">
 
-                </td>
+          <table className="w-full border">
 
+            <thead className="bg-green-600 text-white">
+
+              <tr>
+                <th className="p-2">Nombre</th>
+                <th className="p-2">Edad</th>
+                <th className="p-2">Genero</th>
+                <th className="p-2">Plan</th>
+                <th className="p-2">Inclusión</th>
+                <th className="p-2">Acciones</th>
               </tr>
 
-            ))}
+            </thead>
 
-          </tbody>
+            <tbody>
 
-        </table>
+              {participantesFiltrados.map(p => (
 
-      </div>
+                <tr key={p.id} className="border-b">
+
+                  <td className="p-2">
+                    {p.nombres} {p.apellidos}
+                  </td>
+
+                  <td className="p-2">{p.edad}</td>
+                  <td className="p-2">{p.genero}</td>
+                  <td className="p-2">{p.familiaPlan}</td>
+                  <td className="p-2">{p.inclusion}</td>
+
+                  <td className="p-2 flex gap-2">
+
+                    <button
+                      onClick={() => editarParticipante(p)}
+                      className="bg-blue-600 text-white px-2 py-1 rounded"
+                    >
+                      Editar
+                    </button>
+
+                    <button
+                      onClick={() => eliminarParticipante(p.id)}
+                      className="bg-red-600 text-white px-2 py-1 rounded"
+                    >
+                      Eliminar
+                    </button>
+
+                  </td>
+
+                </tr>
+
+              ))}
+
+            </tbody>
+
+          </table>
+
+        </div>
+
+      )}
 
     </div>
 
