@@ -16,12 +16,15 @@ import {
 
 import { getComunidadesByTecnico } from "@/lib/getComunidadesByTecnico";
 
+
+
 export default function ParticipantesPage() {
 
   const { user } = useAuth();
 
   const [comunidades, setComunidades] = useState<any[]>([]);
   const [participantes, setParticipantes] = useState<any[]>([]);
+  const [filtroComunidad, setFiltroComunidad] = useState("");
 
   const [editandoId, setEditandoId] = useState<string | null>(null);
 
@@ -36,40 +39,51 @@ export default function ParticipantesPage() {
   });
 
   // CARGAR DATOS
-  useEffect(() => {
+useEffect(() => {
 
-    if (!user) return;
+  if (!user) return;
 
-    cargarDatos();
+  cargarDatos(filtroComunidad);
 
-  }, [user]);
+}, [user, filtroComunidad]);
 
-  async function cargarDatos() {
+async function cargarDatos(comunidadId?: string) {
 
-    if (!user) return;
+  if (!user) return;
 
-    const comunidadesData =
-      await getComunidadesByTecnico(user.uid);
+  const comunidadesData =
+    await getComunidadesByTecnico(user.uid);
 
-    setComunidades(comunidadesData);
+  setComunidades(comunidadesData);
 
-    const q = query(
+  // CONSULTA BASE
+  let q = query(
+    collection(db, "participantes"),
+    where("tecnicoId", "==", user.uid),
+    where("estado", "==", "activo")
+  );
+
+  // FILTRO POR COMUNIDAD
+  if (comunidadId) {
+    q = query(
       collection(db, "participantes"),
       where("tecnicoId", "==", user.uid),
-      where("estado", "==", "activo")
+      where("estado", "==", "activo"),
+      where("comunidadId", "==", comunidadId)
     );
-
-    const snap = await getDocs(q);
-
-    const lista: any[] = [];
-
-    snap.forEach(doc =>
-      lista.push({ id: doc.id, ...doc.data() })
-    );
-
-    setParticipantes(lista);
-
   }
+
+  const snap = await getDocs(q);
+
+  const lista: any[] = [];
+
+  snap.forEach(doc =>
+    lista.push({ id: doc.id, ...doc.data() })
+  );
+
+  setParticipantes(lista);
+
+}
 
   // GUARDAR PARTICIPANTE
   async function guardarParticipante() {
@@ -328,6 +342,30 @@ export default function ParticipantesPage() {
         <h2 className="font-semibold mb-4">
           Lista de participantes
         </h2>
+
+        {/* FILTRO POR COMUNIDAD */}
+<div className="mb-4">
+
+  <select
+    value={filtroComunidad}
+    className="border p-2 rounded"
+    onChange={e =>
+      setFiltroComunidad(e.target.value)
+    }
+  >
+    <option value="">
+      Todas las comunidades
+    </option>
+
+    {comunidades.map(c => (
+      <option key={c.id} value={c.id}>
+        {c.nombre}
+      </option>
+    ))}
+
+  </select>
+
+</div>
 
         <table className="w-full border">
 
