@@ -23,21 +23,14 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
 export default function PlanificacionPage() {
-
   const { user } = useAuth();
 
   const [loading, setLoading] = useState(true);
-
   const [semanaActiva, setSemanaActiva] = useState<any>(null);
-
   const [comunidades, setComunidades] = useState<any[]>([]);
-
   const [objetivoSemana, setObjetivoSemana] = useState("");
-
   const [actividades, setActividades] = useState<any[]>([]);
-
   const [planId, setPlanId] = useState<string | null>(null);
-
   const [estado, setEstado] = useState("borrador");
 
   //---------------------------------------------------
@@ -45,27 +38,20 @@ export default function PlanificacionPage() {
   //---------------------------------------------------
 
   useEffect(() => {
-
     if (!user) return;
 
     async function cargarDatos() {
-
       try {
-
         setLoading(true);
 
         const semana = await getSemanaActiva();
 
         if (!semana) {
-
           setLoading(false);
           return;
-
         }
 
         setSemanaActiva(semana);
-
-        if (!user) return;
 
         const comunidadesData =
           await getComunidadesByTecnico(user.uid);
@@ -83,7 +69,6 @@ export default function PlanificacionPage() {
         const snapshot = await getDocs(q);
 
         if (!snapshot.empty) {
-
           const docSnap = snapshot.docs[0];
 
           setPlanId(docSnap.id);
@@ -91,27 +76,17 @@ export default function PlanificacionPage() {
           const data = docSnap.data();
 
           setObjetivoSemana(data.objetivoSemana || "");
-
           setActividades(data.actividades || []);
-
           setEstado(data.estado || "borrador");
-
         }
-
       } catch (error) {
-
         console.error(error);
-
       } finally {
-
         setLoading(false);
-
       }
-
     }
 
     cargarDatos();
-
   }, [user]);
 
   //---------------------------------------------------
@@ -119,13 +94,9 @@ export default function PlanificacionPage() {
   //---------------------------------------------------
 
   function agregarActividad() {
-
     if (estado === "enviado") {
-
       alert("La planificación ya fue enviada");
-
       return;
-
     }
 
     setActividades([
@@ -135,13 +106,13 @@ export default function PlanificacionPage() {
         comunidadNombre: "",
         componente: "",
         actividad: "",
-        dia: "",
+        dia: "",     // 🔵 Campo antiguo (se mantiene)
+        fecha: "",   // 🆕 Campo nuevo real
         horario: "",
         objetivoEspecifico: "",
         productoEsperado: "",
       }
     ]);
-
   }
 
   //---------------------------------------------------
@@ -153,26 +124,36 @@ export default function PlanificacionPage() {
     campo: string,
     valor: string
   ) {
-
     if (estado === "enviado") return;
 
     const nuevas = [...actividades];
 
     nuevas[index][campo] = valor;
 
+    // 🆕 Si cambia fecha → generar día visible automáticamente
+    if (campo === "fecha") {
+      const fechaObj = new Date(valor);
+
+      const opciones: Intl.DateTimeFormatOptions = {
+        day: "2-digit",
+        month: "short"
+      };
+
+      nuevas[index].dia = fechaObj
+        .toLocaleDateString("es-ES", opciones)
+        .replace(".", "");
+    }
+
     // si cambia comunidadId guardar también nombre
     if (campo === "comunidadId") {
-
       const comunidad =
         comunidades.find(c => c.id === valor);
 
       nuevas[index].comunidadNombre =
         comunidad?.nombre || "";
-
     }
 
     setActividades(nuevas);
-
   }
 
   //---------------------------------------------------
@@ -180,25 +161,17 @@ export default function PlanificacionPage() {
   //---------------------------------------------------
 
   function validar() {
-
     if (!objetivoSemana) {
-
       alert("Ingrese el objetivo semanal");
-
       return false;
-
     }
 
     if (actividades.length === 0) {
-
       alert("Debe agregar al menos una actividad");
-
       return false;
-
     }
 
     return true;
-
   }
 
   //---------------------------------------------------
@@ -208,48 +181,32 @@ export default function PlanificacionPage() {
   async function guardarPlanificacion(
     nuevoEstado: "borrador" | "enviado"
   ) {
-
     if (!user || !semanaActiva) return;
 
     if (!validar()) return;
 
     if (estado === "enviado") {
-
       alert("La planificación ya fue enviada");
-
       return;
-
     }
 
     const data = {
-
       semanaId: semanaActiva.id,
-
       tecnicoId: user.uid,
-
       tecnicoEmail: user.email,
-
       objetivoSemana,
-
       actividades,
-
       estado: nuevoEstado,
-
       fechaActualizacion: serverTimestamp(),
-
     };
 
     try {
-
       if (planId) {
-
         await updateDoc(
           doc(db, "planificaciones", planId),
           data
         );
-
       } else {
-
         const docRef =
           await addDoc(
             collection(db, "planificaciones"),
@@ -257,7 +214,6 @@ export default function PlanificacionPage() {
           );
 
         setPlanId(docRef.id);
-
       }
 
       setEstado(nuevoEstado);
@@ -267,15 +223,10 @@ export default function PlanificacionPage() {
           ? "Planificación enviada correctamente"
           : "Borrador guardado"
       );
-
     } catch (error) {
-
       console.error(error);
-
       alert("Error al guardar");
-
     }
-
   }
 
   //---------------------------------------------------
@@ -283,7 +234,6 @@ export default function PlanificacionPage() {
   //---------------------------------------------------
 
   function generarPDF() {
-
     const doc = new jsPDF();
 
     doc.setFontSize(14);
@@ -308,50 +258,35 @@ export default function PlanificacionPage() {
     );
 
     const tableData = actividades.map((act, index) => [
-
       index + 1,
-
       act.comunidadNombre,
-
       act.componente,
-
       act.actividad,
-
-      act.dia,
-
+      act.fecha || act.dia, // 🆕 usa fecha si existe
       act.horario,
-
       act.objetivoEspecifico,
-
       act.productoEsperado
-
     ]);
 
     autoTable(doc, {
-
       startY: 45,
-
       head: [[
         "N°",
         "Comunidad",
         "Componente",
         "Actividad",
-        "Día",
+        "Fecha",
         "Horario",
         "Objetivo específico",
         "Producto esperado"
       ]],
-
       body: tableData,
-
       styles: { fontSize: 8 }
-
     });
 
     doc.save(
       `Planificacion_${semanaActiva.fechaInicio}_${semanaActiva.fechaFin}.pdf`
     );
-
   }
 
   //---------------------------------------------------
@@ -365,7 +300,6 @@ export default function PlanificacionPage() {
     return <p>No hay semana activa</p>;
 
   return (
-
     <div className="space-y-6">
 
       <h1 className="text-2xl font-bold">
@@ -393,7 +327,6 @@ export default function PlanificacionPage() {
       {/* OBJETIVO */}
 
       <div>
-
         <label className="font-semibold">
           Objetivo semanal
         </label>
@@ -406,7 +339,6 @@ export default function PlanificacionPage() {
             setObjetivoSemana(e.target.value)
           }
         />
-
       </div>
 
       {/* ACTIVIDADES */}
@@ -436,19 +368,15 @@ export default function PlanificacionPage() {
                 )
               }
             >
-
               <option value="">
                 Seleccione comunidad
               </option>
 
               {comunidades.map(c => (
-
                 <option key={c.id} value={c.id}>
                   {c.nombre}
                 </option>
-
               ))}
-
             </select>
 
             <input
@@ -479,15 +407,17 @@ export default function PlanificacionPage() {
               }
             />
 
+            {/* 🆕 FECHA REAL */}
+
             <input
+              type="date"
               disabled={estado === "enviado"}
-              placeholder="Día"
               className="w-full border p-2 rounded"
-              value={act.dia}
+              value={act.fecha || ""}
               onChange={(e) =>
                 actualizarActividad(
                   index,
-                  "dia",
+                  "fecha",
                   e.target.value
                 )
               }
@@ -580,7 +510,5 @@ export default function PlanificacionPage() {
       </div>
 
     </div>
-
   );
-
 }
