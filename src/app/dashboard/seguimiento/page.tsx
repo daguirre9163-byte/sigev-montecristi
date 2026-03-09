@@ -121,14 +121,20 @@ export default function SeguimientoPage() {
           actividadPlanificada: act.actividad,
           actividadRealizada: "",
 
+          tipoEjecucionActividad: "planificada",
+          motivoCambioActividad: "",
+
           asistentesIds: [],
           porcentajeAsistencia: 0,
 
           evidenciasFotos: [],
           evidenciaListaPdf: "",
 
-          // 🔥 FECHA DE LA PLANIFICACIÓN
-          fecha: act.fecha || ""
+          fecha: act.fecha || "",
+
+          estadoActividad: "realizada",
+          motivoNoRealizada: "",
+          fechaReprogramada: ""
 
         }));
 
@@ -138,8 +144,7 @@ export default function SeguimientoPage() {
 
   }
 
-
-  //---------------------------------------------------
+    //---------------------------------------------------
   // STORAGE
   //---------------------------------------------------
 
@@ -156,6 +161,11 @@ export default function SeguimientoPage() {
   async function subirFoto(e: any, index: number) {
 
     if (!user || bloqueado) return;
+
+    if (registros[index].estadoActividad !== "realizada") {
+      alert("La actividad no se realizó, no se pueden subir evidencias.");
+      return;
+    }
 
     const file = e.target.files[0];
     if (!file) return;
@@ -195,6 +205,11 @@ export default function SeguimientoPage() {
   async function subirPDF(e: any, index: number) {
 
     if (!user || bloqueado) return;
+
+    if (registros[index].estadoActividad !== "realizada") {
+      alert("La actividad no se realizó, no se puede subir lista.");
+      return;
+    }
 
     const file = e.target.files[0];
     if (!file) return;
@@ -288,6 +303,11 @@ export default function SeguimientoPage() {
     regIndex: number
   ) {
 
+    if (registros[regIndex].estadoActividad !== "realizada") {
+      alert("No se puede registrar asistencia si la actividad no se realizó");
+      return;
+    }
+
     const q = query(
       collection(db, "participantes"),
       where("comunidadId", "==", comunidadId),
@@ -369,7 +389,9 @@ export default function SeguimientoPage() {
 
         i + 1,
         reg.comunidadNombre,
-        reg.actividadRealizada || reg.actividadPlanificada,
+        reg.actividadPlanificada,
+        reg.actividadRealizada || "-",
+        reg.estadoActividad,
         reg.porcentajeAsistencia + "%"
 
       ]);
@@ -378,7 +400,9 @@ export default function SeguimientoPage() {
       head: [[
         "N°",
         "Comunidad",
-        "Actividad",
+        "Planificada",
+        "Realizada",
+        "Estado",
         "% Asistencia"
       ]],
       body: tableData
@@ -402,35 +426,28 @@ function formatearFecha(fecha: string) {
     .toLocaleDateString("es-EC");
 }
 
-  function obtenerFecha(reg: any) {
+function obtenerFecha(reg: any) {
   if (!reg) return "Sin fecha";
 
-  // Caso 1: fecha como Timestamp de Firestore
   if (reg.fecha?.seconds) {
     return new Date(reg.fecha.seconds * 1000).toLocaleDateString();
   }
 
-  // Caso 2: fecha como Date
   if (reg.fecha instanceof Date) {
     return reg.fecha.toLocaleDateString();
   }
 
-  // Caso 3: fecha como string
   if (reg.fecha) return reg.fecha;
 
-  // Caso 4: viene como "dia" desde planificación
   if (reg.dia) return reg.dia;
 
-  // Caso 5: cualquier otro campo posible
   if (reg.fechaActividad) return reg.fechaActividad;
 
   return "Sin fecha";
 }
-
-
-  //---------------------------------------------------
-  // UI
-  //---------------------------------------------------
+//---------------------------------------------------
+// UI
+//---------------------------------------------------
 
   if (!semanaActiva)
     return <p>No hay semana activa.</p>;
@@ -476,16 +493,18 @@ function formatearFecha(fecha: string) {
             {reg.actividadPlanificada}
           </p>
 
-          {/* 🔥 FECHA */}
           <p>
             <strong>Fecha programada:</strong>{" "}
             {formatearFecha(reg.fecha)}
           </p>
 
 
+          {/* ACTIVIDAD REALIZADA */}
+
           <input
             disabled={bloqueado}
             type="text"
+            placeholder="Actividad realizada"
             value={reg.actividadRealizada}
             onChange={(e) => {
 
@@ -500,8 +519,135 @@ function formatearFecha(fecha: string) {
           />
 
 
-          <button
+          {/* TIPO DE EJECUCIÓN */}
+
+          <label className="font-medium">
+            Tipo de ejecución
+          </label>
+
+          <select
             disabled={bloqueado}
+            value={reg.tipoEjecucionActividad}
+            onChange={(e)=>{
+
+              const nuevos=[...registros]
+              nuevos[index].tipoEjecucionActividad=e.target.value
+              setRegistros(nuevos)
+
+            }}
+            className="border rounded px-3 py-2 w-full"
+          >
+
+            <option value="planificada">
+              Actividad planificada
+            </option>
+
+            <option value="modificada">
+              Actividad diferente
+            </option>
+
+          </select>
+
+
+          {reg.tipoEjecucionActividad === "modificada" && (
+
+            <textarea
+              disabled={bloqueado}
+              value={reg.motivoCambioActividad}
+              onChange={(e)=>{
+
+                const nuevos=[...registros]
+                nuevos[index].motivoCambioActividad=e.target.value
+                setRegistros(nuevos)
+
+              }}
+              className="w-full border rounded px-3 py-2"
+              placeholder="Explique por qué se cambió la actividad"
+            />
+
+          )}
+
+
+          {/* ESTADO DE ACTIVIDAD */}
+
+          <label className="font-medium">
+            Estado de la actividad
+          </label>
+
+          <select
+            disabled={bloqueado}
+            value={reg.estadoActividad}
+            onChange={(e)=>{
+
+              const nuevos=[...registros]
+              nuevos[index].estadoActividad=e.target.value
+              setRegistros(nuevos)
+
+            }}
+            className="border rounded px-3 py-2 w-full"
+          >
+
+            <option value="realizada">
+              Realizada
+            </option>
+
+            <option value="suspendida">
+              Suspendida
+            </option>
+
+            <option value="cancelada">
+              Cancelada
+            </option>
+
+            <option value="reprogramada">
+              Reprogramada
+            </option>
+
+          </select>
+
+
+          {reg.estadoActividad !== "realizada" && (
+
+            <textarea
+              disabled={bloqueado}
+              value={reg.motivoNoRealizada}
+              onChange={(e)=>{
+
+                const nuevos=[...registros]
+                nuevos[index].motivoNoRealizada=e.target.value
+                setRegistros(nuevos)
+
+              }}
+              className="w-full border rounded px-3 py-2"
+              placeholder="Motivo"
+            />
+
+          )}
+
+
+          {reg.estadoActividad === "reprogramada" && (
+
+            <input
+              type="date"
+              disabled={bloqueado}
+              value={reg.fechaReprogramada}
+              onChange={(e)=>{
+
+                const nuevos=[...registros]
+                nuevos[index].fechaReprogramada=e.target.value
+                setRegistros(nuevos)
+
+              }}
+              className="border rounded px-3 py-2"
+            />
+
+          )}
+
+
+          {/* PARTICIPANTES */}
+
+          <button
+            disabled={bloqueado || reg.estadoActividad !== "realizada"}
             onClick={() =>
               cargarParticipantes(reg.comunidadId, index)
             }
@@ -580,7 +726,7 @@ function formatearFecha(fecha: string) {
                   📷 Evidencias fotográficas
                 </label>
 
-                {!bloqueado && (
+                {!bloqueado && reg.estadoActividad === "realizada" && (
 
                   <label className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded shadow cursor-pointer transition">
 
@@ -601,25 +747,11 @@ function formatearFecha(fecha: string) {
 
                   {reg.evidenciasFotos?.map((url: string, i: number) => (
 
-                    <div key={i} className="relative group">
-
-                      <img
-                        src={url}
-                        className="w-24 h-24 object-cover rounded border shadow"
-                      />
-
-                      {!bloqueado && (
-
-                        <button
-                          onClick={() => eliminarFoto(index, i)}
-                          className="absolute top-1 right-1 bg-red-600 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition"
-                        >
-                          ✕
-                        </button>
-
-                      )}
-
-                    </div>
+                    <img
+                      key={i}
+                      src={url}
+                      className="w-24 h-24 object-cover rounded border shadow"
+                    />
 
                   ))}
 
@@ -636,7 +768,7 @@ function formatearFecha(fecha: string) {
                   📄 Lista de asistencia PDF
                 </label>
 
-                {!bloqueado && (
+                {!bloqueado && reg.estadoActividad === "realizada" && (
 
                   <label className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded shadow cursor-pointer transition">
 
@@ -655,28 +787,13 @@ function formatearFecha(fecha: string) {
 
                 {reg.evidenciaListaPdf && (
 
-                  <div className="flex items-center gap-3 mt-3">
-
-                    <a
-                      href={reg.evidenciaListaPdf}
-                      target="_blank"
-                      className="text-purple-700 font-medium hover:underline"
-                    >
-                      📄 Ver PDF
-                    </a>
-
-                    {!bloqueado && (
-
-                      <button
-                        onClick={() => eliminarPDF(index)}
-                        className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded shadow text-sm"
-                      >
-                        Eliminar
-                      </button>
-
-                    )}
-
-                  </div>
+                  <a
+                    href={reg.evidenciaListaPdf}
+                    target="_blank"
+                    className="text-purple-700 font-medium hover:underline"
+                  >
+                    📄 Ver PDF
+                  </a>
 
                 )}
 
