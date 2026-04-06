@@ -144,6 +144,14 @@ export default function DashboardLayout({
                 Comunidades
               </MenuItem>
 
+              {/* 🔥 NUEVO MÓDULO AGREGADO */}
+              <MenuItem
+                href="/dashboard/admin/eventos-globales"
+                onClick={() => setSidebarOpen(false)}
+              >
+                Eventos Globales
+              </MenuItem>
+
             </MenuSection>
 
           )}
