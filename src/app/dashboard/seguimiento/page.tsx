@@ -31,24 +31,19 @@ interface Semana {
   [key: string]: any;
 }
 
-interface Planificacion {
+interface Participante {
   id: string;
-  tecnicoId: string;
-  semanaId: string;
-  actividades: Actividad[];
+  nombres: string;
+  apellidos: string;
+  edad?: number;
+  sexo?: string;
+  comunidadId: string;
   estado: string;
   [key: string]: any;
 }
 
-interface Actividad {
-  comunidadId: string;
-  comunidadNombre: string;
-  actividad: string;
-  fecha: string;
-  [key: string]: any;
-}
-
-interface Registro {
+// ============ ACTIVIDADES REGULARES (de Planificación) ============
+interface ActividadRegular {
   comunidadId: string;
   comunidadNombre: string;
   actividadPlanificada: string;
@@ -65,15 +60,57 @@ interface Registro {
   fechaReprogramada: string;
 }
 
-interface Participante {
-  id: string;
-  nombres: string;
-  apellidos: string;
-  edad?: number;
-  sexo?: string;
-  comunidadId: string;
-  estado: string;
-  [key: string]: any;
+// ============ EVENTOS GLOBALES EN SEGUIMIENTO (Reuniones) ============
+interface SeguimientoReunion {
+  eventoId: string;
+  eventoTitulo: string;
+  fecha: string;
+  horario: string;
+  lugar: string;
+  objetivo: string;
+  
+  // Confirmación (de Planificación)
+  confirmado: boolean;
+  
+  // Ejecución (de Seguimiento)
+  ejecutado: boolean;
+  estado: "realizada" | "cancelada" | "suspendida";
+  motivoNoEjecucion?: string;
+  observaciones: string;
+}
+
+// ============ EVENTOS GLOBALES EN SEGUIMIENTO (Encuentros) ============
+interface SeguimientoEncuentro {
+  eventoId: string;
+  eventoTitulo: string;
+  tipoEvento: "clubes" | "promotores" | "liderazgo";
+  fecha: string;
+  horario: string;
+  lugar: string;
+  objetivo: string;
+  
+  // Confirmación (de Planificación)
+  confirmado: boolean;
+  comunidadesConfirmadas: Array<{
+    comunidadId: string;
+    comunidadNombre: string;
+    participa: "si" | "no";
+  }>;
+  
+  // Ejecución (de Seguimiento)
+  ejecutado: boolean;
+  estado: "realizada" | "cancelada" | "suspendida";
+  motivoNoEjecucion?: string;
+  
+  comunidadesEjecutadas: Array<{
+    comunidadId: string;
+    comunidadNombre: string;
+    actividadRealizada: string;
+    asistentesIds: string[];
+    porcentajeAsistencia: number;
+    evidenciasFotos: string[];
+    observaciones: string;
+  }>;
 }
 
 interface Alerta {
@@ -87,11 +124,29 @@ interface Alerta {
   [key: string]: any;
 }
 
+// ============ ESTRUCTURA PRINCIPAL DE SEGUIMIENTO ============
+interface Seguimiento {
+  id?: string;
+  semanaId: string;
+  tecnicoId: string;
+  estado: "borrador" | "enviado";
+  
+  // Secciones
+  actividadesRegulares: ActividadRegular[];
+  reuniones: SeguimientoReunion[];
+  encuentros: SeguimientoEncuentro[];
+  
+  // Metadata
+  fechaActualizacion?: any;
+  createdAt?: any;
+}
+
 // ============ HOOK: Cargar datos ============
 function useCargarDatos(userId: string | undefined) {
   const [semanaActiva, setSemanaActiva] = useState<Semana | null>(null);
-  const [planificacion, setPlanificacion] = useState<Planificacion | null>(null);
-  const [registros, setRegistros] = useState<Registro[]>([]);
+  const [actividadesRegulares, setActividadesRegulares] = useState<ActividadRegular[]>([]);
+  const [reuniones, setReuniones] = useState<SeguimientoReunion[]>([]);
+  const [encuentros, setEncuentros] = useState<SeguimientoEncuentro[]>([]);
   const [alertas, setAlertas] = useState<Alerta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -103,7 +158,7 @@ function useCargarDatos(userId: string | undefined) {
       setLoading(true);
       setError(null);
 
-      // 1. Cargar semana activa
+      // 1️⃣ Cargar semana activa
       const semana = await getSemanaActiva();
       if (!semana) {
         setError("No hay semana activa");
@@ -111,24 +166,7 @@ function useCargarDatos(userId: string | undefined) {
       }
       setSemanaActiva(semana);
 
-      // 2. Cargar planificación enviada
-      const planQuery = query(
-        collection(db, "planificaciones"),
-        where("semanaId", "==", semana.id),
-        where("tecnicoId", "==", userId),
-        where("estado", "==", "enviado")
-      );
-
-      const planSnap = await getDocs(planQuery);
-      if (planSnap.empty) {
-        setError("No existe planificación enviada para esta semana");
-        return;
-      }
-
-      const planData = planSnap.docs[0].data() as Planificacion;
-      setPlanificacion(planData);
-
-      // 3. Cargar seguimiento existente o crear nuevo
+      // 2️⃣ Cargar seguimiento existente
       const segQuery = query(
         collection(db, "seguimientos"),
         where("semanaId", "==", semana.id),
@@ -138,12 +176,55 @@ function useCargarDatos(userId: string | undefined) {
       const segSnap = await getDocs(segQuery);
 
       if (!segSnap.empty) {
-        const segData = segSnap.docs[0].data();
-        setRegistros(segData.registros || []);
+        const segData = segSnap.docs[0].data() as Seguimiento;
+        setActividadesRegulares(segData.actividadesRegulares || []);
+        setReuniones(segData.reuniones || []);
+        setEncuentros(segData.encuentros || []);
       } else {
-        // Crear registros base desde planificación
-        const registrosBase: Registro[] = planData.actividades.map(
-          (act) => ({
+        // 3️⃣ Si no existe, crear desde Planificación y Respuestas de Eventos
+        await crearSeguimientoInicial(semana.id, userId);
+      }
+
+      // 4️⃣ Cargar alertas
+      const alertasQuery = query(
+        collection(db, "alertas"),
+        where("tecnicoId", "==", userId),
+        where("estado", "==", "pendiente")
+      );
+      const alertasSnap = await getDocs(alertasQuery);
+      setAlertas(
+        alertasSnap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        } as Alerta))
+      );
+    } catch (err) {
+      const mensaje = err instanceof Error ? err.message : "Error al cargar datos";
+      setError(mensaje);
+      console.error("Error:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [userId]);
+
+const crearSeguimientoInicial = async (semanaId: string, userId: string) => {
+    try {
+      // 📋 Obtener planificación enviada
+      const planQuery = query(
+        collection(db, "planificaciones"),
+        where("semanaId", "==", semanaId),
+        where("tecnicoId", "==", userId),
+        where("estado", "==", "enviado")
+      );
+
+      const planSnap = await getDocs(planQuery);
+
+      if (!planSnap.empty) {
+        const planData = planSnap.docs[0].data();
+        
+        // Crear actividades regulares base
+        const actBase: ActividadRegular[] = (planData.actividades || []).map(
+          (act: any) => ({
             comunidadId: act.comunidadId,
             comunidadNombre: act.comunidadNombre,
             actividadPlanificada: act.actividad,
@@ -160,30 +241,110 @@ function useCargarDatos(userId: string | undefined) {
             fechaReprogramada: "",
           })
         );
-        setRegistros(registrosBase);
+
+        setActividadesRegulares(actBase);
       }
 
-      // 4. Cargar alertas del técnico
-      const alertasQuery = query(
-        collection(db, "alertas"),
-        where("tecnicoId", "==", userId),
-        where("estado", "==", "pendiente")
+      // 🔔 Obtener eventos globales confirmados
+      const respuestasQuery = query(
+        collection(db, "respuestasEventos"),
+        where("tecnicoId", "==", userId)
       );
 
-      const alertasSnap = await getDocs(alertasQuery);
-      const alertasList = alertasSnap.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-      } as Alerta));
-      setAlertas(alertasList);
+      const respuestasSnap = await getDocs(respuestasQuery);
+      const respuestasData = respuestasSnap.docs.map((d) => d.data());
+      const eventosIds = respuestasData.map((r) => r.eventoId);
+
+      if (eventosIds.length > 0) {
+        // Obtener todos los eventos
+        const eventosSnap = await getDocs(
+          collection(db, "eventosGlobales")
+        );
+        
+        const todosEventos = eventosSnap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        }));
+
+        // Obtener todas las comunidades para mapear nombres
+        const comunidadesSnap = await getDocs(
+          collection(db, "comunidades")
+        );
+        const todasComunidades = new Map(
+          comunidadesSnap.docs.map((d) => [d.id, d.data().nombre])
+        );
+
+        const eventosDelTecnico = todosEventos.filter((e) =>
+          eventosIds.includes(e.id)
+        );
+
+        // Separar en reuniones y encuentros
+        const reunionesBase: SeguimientoReunion[] = [];
+        const encuentrosBase: SeguimientoEncuentro[] = [];
+
+        for (const evento of eventosDelTecnico) {
+          const respuestaData = respuestasData.find(
+            (r) => r.eventoId === evento.id
+          );
+
+          if (evento.tipoEvento === "tecnicos") {
+            // 🟢 REUNIÓN
+            reunionesBase.push({
+              eventoId: evento.id,
+              eventoTitulo: evento.titulo,
+              fecha: evento.fecha,
+              horario: evento.horario,
+              lugar: evento.lugar,
+              objetivo: evento.objetivo,
+              confirmado: respuestaData?.confirmado || false,
+              ejecutado: false,
+              estado: "realizada",
+              observaciones: "",
+            });
+          } else {
+            // 🟠 ENCUENTRO (clubes, promotores, liderazgo)
+            const comunidadesConfirmadas = Object.entries(
+              respuestaData?.respuestas || {}
+            ).map(([comId, respuesta]: [string, any]) => ({
+              comunidadId: comId,
+              comunidadNombre: todasComunidades.get(comId) || respuesta.comunidadNombre || comId, // ✅ OBTENER DEL MAP
+              participa: respuesta.participa,
+            }));
+
+            encuentrosBase.push({
+              eventoId: evento.id,
+              eventoTitulo: evento.titulo,
+              tipoEvento: evento.tipoEvento,
+              fecha: evento.fecha,
+              horario: evento.horario,
+              lugar: evento.lugar,
+              objetivo: evento.objetivo,
+              confirmado: true,
+              comunidadesConfirmadas,
+              ejecutado: false,
+              estado: "realizada",
+              comunidadesEjecutadas: comunidadesConfirmadas
+                .filter((c) => c.participa === "si")
+                .map((c) => ({
+                  comunidadId: c.comunidadId,
+                  comunidadNombre: c.comunidadNombre, // ✅ AHORA TIENE EL NOMBRE CORRECTO
+                  actividadRealizada: "",
+                  asistentesIds: [],
+                  porcentajeAsistencia: 0,
+                  evidenciasFotos: [],
+                  observaciones: "",
+                })),
+            });
+          }
+        }
+
+        setReuniones(reunionesBase);
+        setEncuentros(encuentrosBase);
+      }
     } catch (err) {
-      const mensaje = err instanceof Error ? err.message : "Error al cargar datos";
-      setError(mensaje);
-      console.error("Error al cargar datos:", err);
-    } finally {
-      setLoading(false);
+      console.error("Error al crear seguimiento inicial:", err);
     }
-  }, [userId]);
+  };
 
   useEffect(() => {
     cargar();
@@ -191,9 +352,12 @@ function useCargarDatos(userId: string | undefined) {
 
   return {
     semanaActiva,
-    planificacion,
-    registros,
-    setRegistros,
+    actividadesRegulares,
+    setActividadesRegulares,
+    reuniones,
+    setReuniones,
+    encuentros,
+    setEncuentros,
     alertas,
     loading,
     error,
@@ -214,9 +378,9 @@ function useStorage() {
     }
   }, []);
 
-  const eliminarArchivo = useCallback(async (url: string) => {
+  const eliminarArchivo = useCallback(async (urlPath: string) => {
     try {
-      const storageRef = ref(storage, url);
+      const storageRef = ref(storage, urlPath);
       await deleteObject(storageRef);
     } catch (error) {
       console.error("Error al eliminar archivo:", error);
@@ -226,7 +390,7 @@ function useStorage() {
   return { subirArchivo, eliminarArchivo };
 }
 
-// ============ HOOK: Seguimiento ============
+// ============ HOOK: Guardar Seguimiento ============
 function useSeguimiento(userId: string | undefined, semanaId: string | undefined) {
   const [seguimientoId, setSeguimientoId] = useState<string | null>(null);
   const [estadoSeguimiento, setEstadoSeguimiento] = useState<"borrador" | "enviado">(
@@ -268,16 +432,23 @@ function useSeguimiento(userId: string | undefined, semanaId: string | undefined
   }, [cargarSeguimiento]);
 
   const guardarSeguimiento = useCallback(
-    async (registros: Registro[], nuevoEstado: "borrador" | "enviado") => {
+    async (
+      actividadesRegulares: ActividadRegular[],
+      reuniones: SeguimientoReunion[],
+      encuentros: SeguimientoEncuentro[],
+      nuevoEstado: "borrador" | "enviado"
+    ) => {
       if (!userId || !semanaId) return false;
 
       try {
         setProcesando(true);
 
-        const data = {
+        const data: Seguimiento = {
           semanaId,
           tecnicoId: userId,
-          registros,
+          actividadesRegulares,
+          reuniones,
+          encuentros,
           estado: nuevoEstado,
           fechaActualizacion: serverTimestamp(),
         };
@@ -285,7 +456,10 @@ function useSeguimiento(userId: string | undefined, semanaId: string | undefined
         if (seguimientoId) {
           await updateDoc(doc(db, "seguimientos", seguimientoId), data);
         } else {
-          const docRef = await addDoc(collection(db, "seguimientos"), data);
+          const docRef = await addDoc(collection(db, "seguimientos"), {
+            ...data,
+            createdAt: serverTimestamp(),
+          });
           setSeguimientoId(docRef.id);
         }
 
@@ -315,47 +489,13 @@ function useSeguimiento(userId: string | undefined, semanaId: string | undefined
   };
 }
 
-// ============ COMPONENTE: Card de Alerta ============
-interface CardAlertaProps {
-  alerta: Alerta;
-  onClose: () => void;
-}
-
-function CardAlerta({ alerta, onClose }: CardAlertaProps) {
-  return (
-    <div className="bg-blue-50 border-l-4 border-blue-500 rounded-lg p-4 space-y-2">
-      <div className="flex items-start justify-between">
-        <div className="flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-xl">
-              {alerta.tipo === "reunion" ? "📋" : "🏘️"}
-            </span>
-            <h3 className="font-bold text-gray-900">{alerta.titulo}</h3>
-          </div>
-          <p className="text-sm text-gray-600 mt-1">
-            {alerta.tipo === "reunion"
-              ? "Confirma tu asistencia en Planificación"
-              : "Configura tu participación en Planificación"}
-          </p>
-        </div>
-      </div>
-      <button
-        onClick={onClose}
-        className="text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded transition"
-      >
-        ✓ Ir a Planificación
-      </button>
-    </div>
-  );
-}
-
-// ============ COMPONENTE: Registro de seguimiento ============
-interface RegistroSeguimientoProps {
-  registro: Registro;
+// ============ COMPONENTE: Registro Actividad Regular ============
+interface RegistroActividadRegularProps {
+  actividad: ActividadRegular;
   index: number;
   bloqueado: boolean;
   participantes: Participante[];
-  onRegistroChange: (index: number, registro: Registro) => void;
+  onActividadChange: (index: number, actividad: ActividadRegular) => void;
   onCargarParticipantes: (index: number) => void;
   onToggleAsistencia: (index: number, participanteId: string) => void;
   onSubirFoto: (index: number, file: File) => Promise<void>;
@@ -364,24 +504,23 @@ interface RegistroSeguimientoProps {
   onEliminarPDF: (index: number) => void;
 }
 
-function RegistroSeguimiento({
-  registro,
+function RegistroActividadRegular({
+  actividad,
   index,
   bloqueado,
   participantes,
-  onRegistroChange,
+  onActividadChange,
   onCargarParticipantes,
   onToggleAsistencia,
   onSubirFoto,
   onEliminarFoto,
   onSubirPDF,
   onEliminarPDF,
-}: RegistroSeguimientoProps) {
+}: RegistroActividadRegularProps) {
   const [cargandoFoto, setCargandoFoto] = useState(false);
   const [cargandoPDF, setCargandoPDF] = useState(false);
   const [busquedaParticipantes, setBusquedaParticipantes] = useState("");
 
-  // ============ FILTRAR PARTICIPANTES ============
   const participantesFiltrados = useMemo(() => {
     if (!busquedaParticipantes.trim()) return participantes;
 
@@ -392,51 +531,44 @@ function RegistroSeguimiento({
     );
   }, [participantes, busquedaParticipantes]);
 
-  // ============ SELECCIONAR TODOS ============
   const handleSeleccionarTodos = useCallback(() => {
     if (bloqueado) return;
 
-    const nuevoRegistro = { ...registro };
-    const idsParticipantes = participantes.map((p) => p.id);
-
-    // Si ya están todos seleccionados, deseleccionar todos
-    if (registro.asistentesIds.length === participantes.length) {
-      nuevoRegistro.asistentesIds = [];
-      nuevoRegistro.porcentajeAsistencia = 0;
+    const nuevaActividad = { ...actividad };
+    if (actividad.asistentesIds.length === participantes.length) {
+      nuevaActividad.asistentesIds = [];
+      nuevaActividad.porcentajeAsistencia = 0;
     } else {
-      // Si no están todos, seleccionar todos
-      nuevoRegistro.asistentesIds = idsParticipantes;
-      nuevoRegistro.porcentajeAsistencia = 100;
+      nuevaActividad.asistentesIds = participantes.map((p) => p.id);
+      nuevaActividad.porcentajeAsistencia = 100;
     }
 
-    onRegistroChange(index, nuevoRegistro);
-  }, [registro, participantes, index, bloqueado, onRegistroChange]);
+    onActividadChange(index, nuevaActividad);
+  }, [actividad, participantes, index, bloqueado, onActividadChange]);
 
-  // ============ DESELECCIONAR TODOS ============
   const handleLimpiar = useCallback(() => {
     if (bloqueado) return;
 
-    const nuevoRegistro = { ...registro };
-    nuevoRegistro.asistentesIds = [];
-    nuevoRegistro.porcentajeAsistencia = 0;
+    const nuevaActividad = { ...actividad };
+    nuevaActividad.asistentesIds = [];
+    nuevaActividad.porcentajeAsistencia = 0;
 
-    onRegistroChange(index, nuevoRegistro);
-  }, [registro, index, bloqueado, onRegistroChange]);
+    onActividadChange(index, nuevaActividad);
+  }, [actividad, index, bloqueado, onActividadChange]);
 
-  // ============ MANEJAR CAMBIO DE FOTO ============
   const handleFotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (registro.estadoActividad !== "realizada") {
-      alert("La actividad no se realizó, no se pueden subir evidencias.");
+    if (actividad.estadoActividad !== "realizada") {
+      alert("La actividad no se realizó");
       return;
     }
 
     try {
       setCargandoFoto(true);
       await onSubirFoto(index, file);
-      alert("✅ Foto subida correctamente");
+      alert("✅ Foto subida");
     } catch (error) {
       alert("❌ Error al subir foto");
     } finally {
@@ -444,20 +576,19 @@ function RegistroSeguimiento({
     }
   };
 
-  // ============ MANEJAR CAMBIO DE PDF ============
   const handlePDFChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (registro.estadoActividad !== "realizada") {
-      alert("La actividad no se realizó, no se puede subir lista.");
+    if (actividad.estadoActividad !== "realizada") {
+      alert("La actividad no se realizó");
       return;
     }
 
     try {
       setCargandoPDF(true);
       await onSubirPDF(index, file);
-      alert("✅ PDF subido correctamente");
+      alert("✅ PDF subido");
     } catch (error) {
       alert("❌ Error al subir PDF");
     } finally {
@@ -466,39 +597,44 @@ function RegistroSeguimiento({
   };
 
   return (
-    <div className="bg-white rounded-lg shadow-md p-6 space-y-4 border-l-4 border-green-500">
-      {/* Encabezado */}
+    <div className="bg-white rounded-lg shadow-md p-6 space-y-4 border-l-4 border-blue-500">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold text-gray-900">
-          📍 {registro.comunidadNombre}
-        </h2>
+        <div>
+          <h3 className="text-lg font-bold text-gray-900">
+            📍 {actividad.comunidadNombre}
+          </h3>
+          <p className="text-sm text-gray-600 mt-1">
+            {actividad.actividadPlanificada}
+          </p>
+        </div>
         <span
           className={`px-3 py-1 rounded-full text-sm font-semibold ${
-            registro.estadoActividad === "realizada"
+            actividad.estadoActividad === "realizada"
               ? "bg-green-100 text-green-800"
-              : "bg-yellow-100 text-yellow-800"
+              : actividad.estadoActividad === "suspendida"
+              ? "bg-yellow-100 text-yellow-800"
+              : actividad.estadoActividad === "cancelada"
+              ? "bg-red-100 text-red-800"
+              : "bg-orange-100 text-orange-800"
           }`}
         >
-          {registro.estadoActividad === "realizada" && "✅ Realizada"}
-          {registro.estadoActividad === "suspendida" && "⏸️ Suspendida"}
-          {registro.estadoActividad === "cancelada" && "❌ Cancelada"}
-          {registro.estadoActividad === "reprogramada" && "🔄 Reprogramada"}
+          {actividad.estadoActividad === "realizada" && "✅"}
+          {actividad.estadoActividad === "suspendida" && "⏸️"}
+          {actividad.estadoActividad === "cancelada" && "❌"}
+          {actividad.estadoActividad === "reprogramada" && "🔄"}
+          {actividad.estadoActividad}
         </span>
       </div>
 
-      {/* Información básica */}
+      {/* Grid de información */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-gray-50 p-4 rounded">
         <div>
-          <p className="text-sm text-gray-600">Actividad planificada</p>
-          <p className="font-semibold text-gray-900">
-            {registro.actividadPlanificada}
-          </p>
+          <p className="text-xs text-gray-600 uppercase font-semibold">Fecha</p>
+          <p className="font-medium text-gray-900">{actividad.fecha || "No definida"}</p>
         </div>
         <div>
-          <p className="text-sm text-gray-600">Fecha</p>
-          <p className="font-semibold text-gray-900">
-            {registro.fecha || "No definida"}
-          </p>
+          <p className="text-xs text-gray-600 uppercase font-semibold">Asistencia</p>
+          <p className="font-medium text-gray-900">{actividad.porcentajeAsistencia}%</p>
         </div>
       </div>
 
@@ -509,16 +645,16 @@ function RegistroSeguimiento({
         </label>
         <input
           type="text"
-          placeholder="Describe la actividad que se realizó"
-          value={registro.actividadRealizada}
+          placeholder="Describe la actividad ejecutada"
+          value={actividad.actividadRealizada}
           onChange={(e) =>
-            onRegistroChange(index, {
-              ...registro,
+            onActividadChange(index, {
+              ...actividad,
               actividadRealizada: e.target.value,
             })
           }
           disabled={bloqueado}
-          className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+          className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
         />
       </div>
 
@@ -528,58 +664,57 @@ function RegistroSeguimiento({
           Tipo de Ejecución
         </label>
         <select
-          value={registro.tipoEjecucionActividad}
+          value={actividad.tipoEjecucionActividad}
           onChange={(e) =>
-            onRegistroChange(index, {
-              ...registro,
+            onActividadChange(index, {
+              ...actividad,
               tipoEjecucionActividad: e.target.value as any,
             })
           }
           disabled={bloqueado}
-          className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+          className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
         >
-          <option value="planificada">Actividad planificada</option>
-          <option value="modificada">Actividad diferente</option>
+          <option value="planificada">Planificada</option>
+          <option value="modificada">Diferente a lo planificado</option>
         </select>
       </div>
 
-      {/* Motivo cambio */}
-      {registro.tipoEjecucionActividad === "modificada" && (
+      {actividad.tipoEjecucionActividad === "modificada" && (
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">
             Motivo del cambio
           </label>
           <textarea
-            placeholder="Explique por qué se cambió la actividad"
-            value={registro.motivoCambioActividad}
+            placeholder="¿Por qué cambió la actividad?"
+            value={actividad.motivoCambioActividad}
             onChange={(e) =>
-              onRegistroChange(index, {
-                ...registro,
+              onActividadChange(index, {
+                ...actividad,
                 motivoCambioActividad: e.target.value,
               })
             }
             disabled={bloqueado}
-            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
             rows={2}
           />
         </div>
       )}
 
-      {/* Estado de actividad */}
+      {/* Estado de la actividad */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">
-          Estado de la Actividad
+          Estado
         </label>
         <select
-          value={registro.estadoActividad}
+          value={actividad.estadoActividad}
           onChange={(e) =>
-            onRegistroChange(index, {
-              ...registro,
+            onActividadChange(index, {
+              ...actividad,
               estadoActividad: e.target.value as any,
             })
           }
           disabled={bloqueado}
-          className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+          className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
         >
           <option value="realizada">✅ Realizada</option>
           <option value="suspendida">⏸️ Suspendida</option>
@@ -588,51 +723,49 @@ function RegistroSeguimiento({
         </select>
       </div>
 
-      {/* Motivo no realizada */}
-      {registro.estadoActividad !== "realizada" && (
+      {actividad.estadoActividad !== "realizada" && (
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">
             Motivo
           </label>
           <textarea
-            placeholder="Explique por qué no se realizó"
-            value={registro.motivoNoRealizada}
+            placeholder="¿Por qué no se realizó?"
+            value={actividad.motivoNoRealizada}
             onChange={(e) =>
-              onRegistroChange(index, {
-                ...registro,
+              onActividadChange(index, {
+                ...actividad,
                 motivoNoRealizada: e.target.value,
               })
             }
             disabled={bloqueado}
-            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
             rows={2}
           />
         </div>
       )}
 
-      {/* Fecha reprogramada */}
-      {registro.estadoActividad === "reprogramada" && (
+      {actividad.estadoActividad === "reprogramada" && (
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">
-            Nueva Fecha
+            Nueva fecha
           </label>
           <input
             type="date"
-            value={registro.fechaReprogramada}
+            value={actividad.fechaReprogramada}
             onChange={(e) =>
-              onRegistroChange(index, {
-                ...registro,
+              onActividadChange(index, {
+                ...actividad,
                 fechaReprogramada: e.target.value,
               })
             }
             disabled={bloqueado}
-            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
           />
         </div>
       )}
 
       {/* Participantes */}
-      {registro.estadoActividad === "realizada" && (
+      {actividad.estadoActividad === "realizada" && (
         <>
           <button
             onClick={() => onCargarParticipantes(index)}
@@ -644,70 +777,48 @@ function RegistroSeguimiento({
 
           {participantes.length > 0 && (
             <div className="space-y-4 bg-gray-50 p-4 rounded-lg border border-gray-200">
-              {/* Encabezado participantes */}
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <div>
                     <h4 className="font-bold text-gray-900">
-                      Asistencia: {registro.porcentajeAsistencia}%
+                      Asistencia: {actividad.porcentajeAsistencia}%
                     </h4>
                     <p className="text-sm text-gray-600">
-                      {registro.asistentesIds.length} de {participantes.length}{" "}
-                      presentes
+                      {actividad.asistentesIds.length} de {participantes.length}
                     </p>
                   </div>
                 </div>
 
-                {/* Búsqueda de participantes */}
                 <input
                   type="text"
                   placeholder="🔍 Buscar por nombre..."
                   value={busquedaParticipantes}
                   onChange={(e) => setBusquedaParticipantes(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm mb-3"
+                  className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 text-sm mb-3"
                 />
 
-                {/* Botones de selección */}
-                <div className="flex gap-2 flex-wrap">
+                <div className="flex gap-2 flex-wrap mb-3">
                   <button
                     onClick={handleSeleccionarTodos}
                     disabled={bloqueado}
-                    className={`px-4 py-2 rounded-lg font-medium text-sm transition ${
-                      registro.asistentesIds.length === participantes.length
-                        ? "bg-green-600 hover:bg-green-700 text-white"
-                        : "bg-white border border-green-600 text-green-600 hover:bg-green-50"
-                    } disabled:opacity-50`}
+                    className="px-4 py-2 rounded-lg font-medium text-sm bg-green-600 hover:bg-green-700 text-white transition disabled:opacity-50"
                   >
-                    {registro.asistentesIds.length === participantes.length
-                      ? "✓ Todos seleccionados"
-                      : "✓ Seleccionar todos"}
+                    ✓ Todos
                   </button>
 
                   <button
                     onClick={handleLimpiar}
-                    disabled={bloqueado || registro.asistentesIds.length === 0}
+                    disabled={bloqueado || actividad.asistentesIds.length === 0}
                     className="px-4 py-2 rounded-lg font-medium text-sm bg-red-100 hover:bg-red-200 text-red-800 transition disabled:opacity-50"
                   >
-                    ✕ Desseleccionar todos
+                    ✕ Limpiar
                   </button>
-
-                  {busquedaParticipantes && (
-                    <button
-                      onClick={() => setBusquedaParticipantes("")}
-                      className="px-4 py-2 rounded-lg font-medium text-sm bg-gray-200 hover:bg-gray-300 text-gray-800 transition"
-                    >
-                      🔄 Limpiar búsqueda
-                    </button>
-                  )}
                 </div>
               </div>
 
-              {/* Lista de participantes filtrados */}
               <div className="space-y-2 max-h-64 overflow-y-auto border border-gray-300 rounded-lg p-2 bg-white">
                 {participantesFiltrados.length === 0 ? (
-                  <p className="text-center text-gray-500 py-4">
-                    No hay participantes que coincidan con la búsqueda
-                  </p>
+                  <p className="text-center text-gray-500 py-4">Sin resultados</p>
                 ) : (
                   participantesFiltrados.map((participante) => (
                     <label
@@ -716,134 +827,120 @@ function RegistroSeguimiento({
                     >
                       <input
                         type="checkbox"
-                        checked={registro.asistentesIds.includes(
-                          participante.id
-                        )}
-                        onChange={() =>
-                          onToggleAsistencia(index, participante.id)
-                        }
+                        checked={actividad.asistentesIds.includes(participante.id)}
+                        onChange={() => onToggleAsistencia(index, participante.id)}
                         disabled={bloqueado}
                         className="w-5 h-5 text-blue-600 rounded cursor-pointer"
                       />
                       <div className="flex-1 min-w-0">
-                        <p className="font-medium text-gray-900 truncate">
+                        <p className="font-medium text-gray-900">
                           {participante.nombres} {participante.apellidos}
                         </p>
-                        <div className="flex gap-2 text-xs text-gray-600">
-                          {participante.edad && (
-                            <span>📅 {participante.edad} años</span>
-                          )}
-                          {participante.sexo && <span>👤 {participante.sexo}</span>}
-                        </div>
+                        {participante.edad && (
+                          <p className="text-xs text-gray-600">📅 {participante.edad} años</p>
+                        )}
                       </div>
-                      <div
+                      <span
                         className={`px-2 py-1 rounded text-xs font-semibold ${
-                          registro.asistentesIds.includes(participante.id)
+                          actividad.asistentesIds.includes(participante.id)
                             ? "bg-green-100 text-green-800"
                             : "bg-gray-100 text-gray-600"
                         }`}
                       >
-                        {registro.asistentesIds.includes(participante.id)
+                        {actividad.asistentesIds.includes(participante.id)
                           ? "Presente"
                           : "Ausente"}
-                      </div>
+                      </span>
                     </label>
                   ))
                 )}
               </div>
 
-              {/* Resumen de búsqueda */}
-              {busquedaParticipantes && (
-                <p className="text-sm text-gray-600 text-center">
-                  Mostrando {participantesFiltrados.length} de{" "}
-                  {participantes.length} participantes
-                </p>
-              )}
-
-              {/* Fotos */}
-              <div className="pt-4 border-t border-gray-300">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  📷 Evidencias Fotográficas
-                </label>
-
-                {!bloqueado && registro.estadoActividad === "realizada" && (
-                  <label className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium cursor-pointer transition">
-                    {cargandoFoto ? "⏳ Subiendo..." : "📷 Subir Foto"}
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleFotoChange}
-                      disabled={cargandoFoto}
-                      className="hidden"
-                    />
+              {/* Evidencias */}
+              <div className="pt-4 border-t border-gray-300 space-y-4">
+                {/* Fotos */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    📷 Fotos
                   </label>
-                )}
 
-                {registro.evidenciasFotos.length > 0 && (
-                  <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-3">
-                    {registro.evidenciasFotos.map((url, i) => (
-                      <div key={i} className="relative group">
-                        <img
-                          src={url}
-                          alt={`Foto ${i + 1}`}
-                          className="w-full h-24 object-cover rounded-lg border border-gray-300 shadow-sm"
-                        />
-                        {!bloqueado && (
-                          <button
-                            onClick={() => onEliminarFoto(index, i)}
-                            className="absolute top-1 right-1 bg-red-600 hover:bg-red-700 text-white rounded-full w-6 h-6 flex items-center justify-center opacity-0 group-hover:opacity-100 transition shadow-lg"
-                            title="Eliminar foto"
-                          >
-                            ✕
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+                  {!bloqueado && actividad.estadoActividad === "realizada" && (
+                    <label className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium cursor-pointer transition">
+                      {cargandoFoto ? "⏳" : "📷"} {cargandoFoto ? "Subiendo..." : "Subir"}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleFotoChange}
+                        disabled={cargandoFoto}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
 
-              {/* PDF */}
-              <div className="pt-4 border-t border-gray-300">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  📄 Lista de Asistencia PDF
-                </label>
+                  {actividad.evidenciasFotos.length > 0 && (
+                    <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      {actividad.evidenciasFotos.map((url, i) => (
+                        <div key={i} className="relative group">
+                          <img
+                            src={url}
+                            alt={`Foto ${i + 1}`}
+                            className="w-full h-24 object-cover rounded-lg border border-gray-300"
+                          />
+                          {!bloqueado && (
+                            <button
+                              onClick={() => onEliminarFoto(index, i)}
+                              className="absolute top-1 right-1 bg-red-600 hover:bg-red-700 text-white rounded-full w-6 h-6 flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
-                {!bloqueado && registro.estadoActividad === "realizada" && (
-                  <label className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg font-medium cursor-pointer transition">
-                    {cargandoPDF ? "⏳ Subiendo..." : "📄 Subir PDF"}
-                    <input
-                      type="file"
-                      accept="application/pdf"
-                      onChange={handlePDFChange}
-                      disabled={cargandoPDF}
-                      className="hidden"
-                    />
+                {/* PDF */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    📄 Lista de Asistencia
                   </label>
-                )}
 
-                {registro.evidenciaListaPdf && (
-                  <div className="mt-3 flex items-center gap-2 bg-white p-3 rounded-lg border border-purple-300">
-                    <span className="text-2xl">📄</span>
-                    <a
-                      href={registro.evidenciaListaPdf}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex-1 text-purple-600 hover:text-purple-700 font-medium hover:underline"
-                    >
-                      Ver Lista de Asistencia
-                    </a>
-                    {!bloqueado && (
-                      <button
-                        onClick={() => onEliminarPDF(index)}
-                        className="text-red-600 hover:text-red-700 font-bold transition"
-                        title="Eliminar PDF"
+                  {!bloqueado && actividad.estadoActividad === "realizada" && (
+                    <label className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg font-medium cursor-pointer transition">
+                      {cargandoPDF ? "⏳" : "📄"} {cargandoPDF ? "Subiendo..." : "Subir"}
+                      <input
+                        type="file"
+                        accept="application/pdf"
+                        onChange={handlePDFChange}
+                        disabled={cargandoPDF}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
+
+                  {actividad.evidenciaListaPdf && (
+                    <div className="mt-3 flex items-center gap-2 bg-white p-3 rounded-lg border border-purple-300">
+                      <span>📄</span>
+                      <a
+                        href={actividad.evidenciaListaPdf}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex-1 text-purple-600 hover:text-purple-700 font-medium hover:underline"
                       >
-                        ✕
-                      </button>
-                    )}
-                  </div>
-                )}
+                        Ver PDF
+                      </a>
+                      {!bloqueado && (
+                        <button
+                          onClick={() => onEliminarPDF(index)}
+                          className="text-red-600 hover:text-red-700"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -853,14 +950,581 @@ function RegistroSeguimiento({
   );
 }
 
+// ============ COMPONENTE: Registro Reunión ============
+interface RegistroReunionProps {
+  reunion: SeguimientoReunion;
+  index: number;
+  bloqueado: boolean;
+  onReunionChange: (index: number, reunion: SeguimientoReunion) => void;
+}
+
+function RegistroReunion({
+  reunion,
+  index,
+  bloqueado,
+  onReunionChange,
+}: RegistroReunionProps) {
+  return (
+    <div className="bg-white rounded-lg shadow-md p-6 space-y-4 border-l-4 border-yellow-500">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-bold text-gray-900">
+            📋 {reunion.eventoTitulo}
+          </h3>
+          <p className="text-sm text-gray-600 mt-1">
+            {new Date(reunion.fecha).toLocaleDateString("es-ES")} | {reunion.horario} | {reunion.lugar}
+          </p>
+        </div>
+        <span
+          className={`px-3 py-1 rounded-full text-sm font-semibold ${
+            reunion.estado === "realizada"
+              ? "bg-green-100 text-green-800"
+              : reunion.estado === "suspendida"
+              ? "bg-yellow-100 text-yellow-800"
+              : "bg-red-100 text-red-800"
+          }`}
+        >
+          {reunion.estado === "realizada" && "✅"}
+          {reunion.estado === "suspendida" && "⏸️"}
+          {reunion.estado === "cancelada" && "❌"}
+          {reunion.estado}
+        </span>
+      </div>
+
+      {/* Información general */}
+      <div className="bg-blue-50 p-4 rounded border border-blue-200">
+        <p className="text-sm text-gray-700">
+          <strong>Confirmado:</strong> {reunion.confirmado ? "✅ Sí" : "❌ No"}
+        </p>
+        <p className="text-sm text-gray-700 mt-2">
+          <strong>🎯 Objetivo:</strong> {reunion.objetivo}
+        </p>
+      </div>
+
+      {/* Estado de ejecución */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Estado de Ejecución
+        </label>
+        <select
+          value={reunion.estado}
+          onChange={(e) =>
+            onReunionChange(index, {
+              ...reunion,
+              estado: e.target.value as any,
+              ejecutado: e.target.value === "realizada",
+            })
+          }
+          disabled={bloqueado}
+          className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-yellow-500 disabled:bg-gray-100"
+        >
+          <option value="realizada">✅ Realizada</option>
+          <option value="suspendida">⏸️ Suspendida</option>
+          <option value="cancelada">❌ Cancelada</option>
+        </select>
+      </div>
+
+      {reunion.estado !== "realizada" && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Motivo
+          </label>
+          <textarea
+            placeholder="¿Por qué no se realizó?"
+            value={reunion.motivoNoEjecucion || ""}
+            onChange={(e) =>
+              onReunionChange(index, {
+                ...reunion,
+                motivoNoEjecucion: e.target.value,
+              })
+            }
+            disabled={bloqueado}
+            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-yellow-500 disabled:bg-gray-100"
+            rows={2}
+          />
+        </div>
+      )}
+
+      {reunion.estado === "realizada" && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Observaciones
+          </label>
+          <textarea
+            placeholder="Notas adicionales sobre la reunión"
+            value={reunion.observaciones}
+            onChange={(e) =>
+              onReunionChange(index, {
+                ...reunion,
+                observaciones: e.target.value,
+              })
+            }
+            disabled={bloqueado}
+            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-yellow-500 disabled:bg-gray-100"
+            rows={2}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============ COMPONENTE: Registro Encuentro (VERSIÓN CORREGIDA) ============
+interface RegistroEncuentroProps {
+  encuentro: SeguimientoEncuentro;
+  index: number;
+  bloqueado: boolean;
+  participantes: Participante[];
+  onEncuentroChange: (index: number, encuentro: SeguimientoEncuentro) => void;
+  onCargarParticipantes: (index: number, comunidadId: string) => void;
+  onToggleAsistencia: (index: number, comunidadIdx: number, participanteId: string) => void;
+  onSubirFoto: (index: number, comunidadIdx: number, file: File) => Promise<void>;
+  onEliminarFoto: (index: number, comunidadIdx: number, fotoIndex: number) => Promise<void>;
+}
+
+function RegistroEncuentro({
+  encuentro,
+  index,
+  bloqueado,
+  participantes,
+  onEncuentroChange,
+  onCargarParticipantes,
+  onToggleAsistencia,
+  onSubirFoto,
+  onEliminarFoto,
+}: RegistroEncuentroProps) {
+  const [expandidas, setExpandidas] = useState<Set<number>>(new Set());
+  const [busquedaParticipantes, setBusquedaParticipantes] = useState<Record<number, string>>({});
+  const [cargandoFoto, setCargandoFoto] = useState<Record<string, boolean>>({});
+  const [participantesCargados, setParticipantesCargados] = useState<Record<number, Participante[]>>({});
+
+  return (
+    <div className="bg-white rounded-lg shadow-md p-6 space-y-4 border-l-4 border-orange-500">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-bold text-gray-900">
+            📅 {encuentro.eventoTitulo}
+          </h3>
+          <p className="text-sm text-gray-600 mt-1">
+            {new Date(encuentro.fecha).toLocaleDateString("es-ES")} | {encuentro.horario} | {encuentro.lugar}
+          </p>
+        </div>
+        <span
+          className={`px-3 py-1 rounded-full text-sm font-semibold ${
+            encuentro.estado === "realizada"
+              ? "bg-green-100 text-green-800"
+              : encuentro.estado === "suspendida"
+              ? "bg-yellow-100 text-yellow-800"
+              : "bg-red-100 text-red-800"
+          }`}
+        >
+          {encuentro.estado === "realizada" && "✅"}
+          {encuentro.estado === "suspendida" && "⏸️"}
+          {encuentro.estado === "cancelada" && "❌"}
+          {encuentro.estado}
+        </span>
+      </div>
+
+      {/* Información general */}
+      <div className="bg-blue-50 p-4 rounded border border-blue-200">
+        <p className="text-sm text-gray-700">
+          <strong>Tipo:</strong> {encuentro.tipoEvento}
+        </p>
+        <p className="text-sm text-gray-700 mt-2">
+          <strong>🎯 Objetivo:</strong> {encuentro.objetivo}
+        </p>
+      </div>
+
+      {/* Estado de ejecución */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Estado de Ejecución
+        </label>
+        <select
+          value={encuentro.estado}
+          onChange={(e) =>
+            onEncuentroChange(index, {
+              ...encuentro,
+              estado: e.target.value as any,
+              ejecutado: e.target.value === "realizada",
+            })
+          }
+          disabled={bloqueado}
+          className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-orange-500 disabled:bg-gray-100"
+        >
+          <option value="realizada">✅ Realizada</option>
+          <option value="suspendida">⏸️ Suspendida</option>
+          <option value="cancelada">❌ Cancelada</option>
+        </select>
+      </div>
+
+      {encuentro.estado !== "realizada" && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Motivo
+          </label>
+          <textarea
+            placeholder="¿Por qué no se realizó?"
+            value={encuentro.motivoNoEjecucion || ""}
+            onChange={(e) =>
+              onEncuentroChange(index, {
+                ...encuentro,
+                motivoNoEjecucion: e.target.value,
+              })
+            }
+            disabled={bloqueado}
+            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-orange-500 disabled:bg-gray-100"
+            rows={2}
+          />
+        </div>
+      )}
+
+      {/* Comunidades confirmadas */}
+      {encuentro.estado === "realizada" && encuentro.comunidadesConfirmadas.length > 0 && (
+        <div className="space-y-4">
+          <h4 className="font-bold text-gray-900">Comunidades Participantes</h4>
+
+          {encuentro.comunidadesConfirmadas
+            .filter((c) => c.participa === "si")
+            .map((comunidad, comIdx) => {
+              const ej = encuentro.comunidadesEjecutadas.find(
+                (e) => e.comunidadId === comunidad.comunidadId
+              ) || {
+                comunidadId: comunidad.comunidadId,
+                comunidadNombre: comunidad.comunidadNombre,
+                actividadRealizada: "",
+                asistentesIds: [],
+                porcentajeAsistencia: 0,
+                evidenciasFotos: [],
+                observaciones: "",
+              };
+
+              // Índice real del array comunidadesEjecutadas
+              const indexEj = encuentro.comunidadesEjecutadas.findIndex(
+                (e) => e.comunidadId === comunidad.comunidadId
+              );
+
+              // Participantes de esta comunidad
+              const participantesComunidad =
+                participantesCargados[comIdx] ||
+                participantes.filter((p) => p.comunidadId === comunidad.comunidadId);
+
+              return (
+                <div
+                  key={comIdx}
+                  className="border rounded-lg p-4 space-y-3 bg-gray-50"
+                >
+                  <div className="flex items-center justify-between">
+                    <h5 className="font-semibold text-gray-900">
+                      📍 {comunidad.comunidadNombre}
+                    </h5>
+                    <button
+                      onClick={() => {
+                        const nueva = new Set(expandidas);
+                        if (nueva.has(comIdx)) {
+                          nueva.delete(comIdx);
+                        } else {
+                          nueva.add(comIdx);
+                        }
+                        setExpandidas(nueva);
+                      }}
+                      className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+                    >
+                      {expandidas.has(comIdx) ? "▼ Ocultar detalles" : "▶ Mostrar detalles"}
+                    </button>
+                  </div>
+
+                  {expandidas.has(comIdx) && (
+                    <div className="space-y-3 ml-4 bg-white p-3 rounded">
+                      {/* Actividad realizada */}
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Actividad Realizada
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="¿Qué se ejecutó?"
+                          value={ej.actividadRealizada}
+                          onChange={(e) => {
+                            const nuevosEj = [...encuentro.comunidadesEjecutadas];
+                            
+                            if (indexEj >= 0) {
+                              nuevosEj[indexEj] = {
+                                ...nuevosEj[indexEj],
+                                actividadRealizada: e.target.value,
+                              };
+                            } else {
+                              nuevosEj.push({
+                                ...ej,
+                                actividadRealizada: e.target.value,
+                              });
+                            }
+                            
+                            onEncuentroChange(index, {
+                              ...encuentro,
+                              comunidadesEjecutadas: nuevosEj,
+                            });
+                          }}
+                          disabled={bloqueado}
+                          className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-orange-500 disabled:bg-gray-100"
+                        />
+                      </div>
+
+                      {/* Observaciones */}
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Observaciones
+                        </label>
+                        <textarea
+                          placeholder="Notas adicionales"
+                          value={ej.observaciones}
+                          onChange={(e) => {
+                            const nuevosEj = [...encuentro.comunidadesEjecutadas];
+                            
+                            if (indexEj >= 0) {
+                              nuevosEj[indexEj] = {
+                                ...nuevosEj[indexEj],
+                                observaciones: e.target.value,
+                              };
+                            } else {
+                              nuevosEj.push({
+                                ...ej,
+                                observaciones: e.target.value,
+                              });
+                            }
+                            
+                            onEncuentroChange(index, {
+                              ...encuentro,
+                              comunidadesEjecutadas: nuevosEj,
+                            });
+                          }}
+                          disabled={bloqueado}
+                          className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-orange-500 disabled:bg-gray-100"
+                          rows={2}
+                        />
+                      </div>
+
+                      {/* Botón cargar participantes */}
+                      <button
+                        onClick={async () => {
+                          await onCargarParticipantes(index, comunidad.comunidadId);
+                          
+                          // Cargar participantes de esta comunidad
+                          try {
+                            const q = query(
+                              collection(db, "participantes"),
+                              where("comunidadId", "==", comunidad.comunidadId),
+                              where("estado", "==", "activo")
+                            );
+
+                            const snapshot = await getDocs(q);
+                            const lista = snapshot.docs.map((d) => ({
+                              id: d.id,
+                              ...d.data(),
+                            } as Participante));
+
+                            setParticipantesCargados((prev) => ({
+                              ...prev,
+                              [comIdx]: lista,
+                            }));
+                          } catch (err) {
+                            alert("Error al cargar participantes");
+                            console.error(err);
+                          }
+                        }}
+                        disabled={bloqueado || participantesComunidad.length > 0}
+                        className="w-full text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-3 py-2 rounded-lg transition"
+                      >
+                        👥 Cargar Participantes ({participantesComunidad.length})
+                      </button>
+
+                      {/* Lista de asistencia */}
+                      {participantesComunidad.length > 0 && (
+                        <div className="space-y-2 bg-white p-3 rounded border border-gray-300">
+                          <div>
+                            <p className="font-semibold text-sm text-gray-900">
+                              Asistencia: {ej.porcentajeAsistencia}% ({ej.asistentesIds.length}/{participantesComunidad.length})
+                            </p>
+                          </div>
+
+                          <input
+                            type="text"
+                            placeholder="🔍 Buscar participante..."
+                            value={busquedaParticipantes[comIdx] || ""}
+                            onChange={(e) =>
+                              setBusquedaParticipantes({
+                                ...busquedaParticipantes,
+                                [comIdx]: e.target.value,
+                              })
+                            }
+                            className="w-full border border-gray-300 rounded p-2 text-sm mb-2"
+                          />
+
+                          <div className="space-y-1 max-h-40 overflow-y-auto border border-gray-200 rounded p-2 bg-gray-50">
+                            {participantesComunidad
+                              .filter((p) =>
+                                `${p.nombres} ${p.apellidos}`
+                                  .toLowerCase()
+                                  .includes(
+                                    (busquedaParticipantes[comIdx] || "").toLowerCase()
+                                  )
+                              )
+                              .map((participante) => (
+                                <label
+                                  key={participante.id}
+                                  className="flex items-center gap-2 p-2 hover:bg-white rounded cursor-pointer text-sm"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={ej.asistentesIds.includes(participante.id)}
+                                    onChange={() => {
+                                      const nuevosEj = [...encuentro.comunidadesEjecutadas];
+                                      let ejActualizado = { ...ej };
+
+                                      if (indexEj >= 0) {
+                                        ejActualizado = nuevosEj[indexEj];
+                                      }
+
+                                      const asistentes = ejActualizado.asistentesIds;
+                                      if (asistentes.includes(participante.id)) {
+                                        ejActualizado.asistentesIds = asistentes.filter(
+                                          (id) => id !== participante.id
+                                        );
+                                      } else {
+                                        ejActualizado.asistentesIds.push(participante.id);
+                                      }
+
+                                      // Calcular porcentaje
+                                      ejActualizado.porcentajeAsistencia =
+                                        participantesComunidad.length > 0
+                                          ? Math.round(
+                                              (ejActualizado.asistentesIds.length /
+                                                participantesComunidad.length) *
+                                                100
+                                            )
+                                          : 0;
+
+                                      if (indexEj >= 0) {
+                                        nuevosEj[indexEj] = ejActualizado;
+                                      } else {
+                                        nuevosEj.push(ejActualizado);
+                                      }
+
+                                      onEncuentroChange(index, {
+                                        ...encuentro,
+                                        comunidadesEjecutadas: nuevosEj,
+                                      });
+                                    }}
+                                    disabled={bloqueado}
+                                    className="w-4 h-4"
+                                  />
+                                  <span className="font-medium">
+                                    {participante.nombres} {participante.apellidos}
+                                  </span>
+                                  <span
+                                    className={`ml-auto text-xs px-2 py-1 rounded font-semibold ${
+                                      ej.asistentesIds.includes(participante.id)
+                                        ? "bg-green-100 text-green-800"
+                                        : "bg-gray-100 text-gray-600"
+                                    }`}
+                                  >
+                                    {ej.asistentesIds.includes(participante.id)
+                                      ? "Presente"
+                                      : "Ausente"}
+                                  </span>
+                                </label>
+                              ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Fotos */}
+                      <div className="pt-3 border-t border-gray-300">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          📷 Fotos
+                        </label>
+
+                        {!bloqueado && (
+                          <label className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded font-medium cursor-pointer text-sm transition">
+                            📷 Subir
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={async (e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  try {
+                                    setCargandoFoto({
+                                      ...cargandoFoto,
+                                      [`${index}_${comIdx}`]: true,
+                                    });
+                                    await onSubirFoto(index, comIdx, file);
+                                    alert("✅ Foto subida");
+                                  } catch (err) {
+                                    alert("❌ Error al subir foto");
+                                  } finally {
+                                    setCargandoFoto({
+                                      ...cargandoFoto,
+                                      [`${index}_${comIdx}`]: false,
+                                    });
+                                  }
+                                }
+                              }}
+                              disabled={cargandoFoto[`${index}_${comIdx}`]}
+                              className="hidden"
+                            />
+                          </label>
+                        )}
+
+                        {ej.evidenciasFotos.length > 0 && (
+                          <div className="mt-2 grid grid-cols-2 gap-2">
+                            {ej.evidenciasFotos.map((url, fIdx) => (
+                              <div key={fIdx} className="relative group">
+                                <img
+                                  src={url}
+                                  alt={`Foto ${fIdx + 1}`}
+                                  className="w-full h-16 object-cover rounded border border-gray-300"
+                                />
+                                {!bloqueado && (
+                                  <button
+                                    onClick={() => onEliminarFoto(index, comIdx, fIdx)}
+                                    className="absolute top-0 right-0 bg-red-600 hover:bg-red-700 text-white rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 transition text-xs"
+                                  >
+                                    ✕
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {ej.evidenciasFotos.length === 0 && (
+                          <p className="text-xs text-gray-500 mt-1">Sin fotos aún</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ============ COMPONENTE PRINCIPAL ============
 export default function SeguimientoPage() {
   const { user } = useAuth();
+
   const {
     semanaActiva,
-    planificacion,
-    registros,
-    setRegistros,
+    actividadesRegulares,
+    setActividadesRegulares,
+    reuniones,
+    setReuniones,
+    encuentros,
+    setEncuentros,
     alertas,
     loading,
     error,
@@ -875,32 +1539,33 @@ export default function SeguimientoPage() {
 
   const { subirArchivo, eliminarArchivo } = useStorage();
 
-  const [participantesPorRegistro, setParticipantesPorRegistro] = useState<
-    Record<number, Participante[]>
+  const [participantesPorActividad, setParticipantesPorActividad] = useState<
+    Record<string, Participante[]>
   >({});
 
-  const [alertaMostrada, setAlertaMostrada] = useState<string | null>(null);
+  // MANEJADORES ACTIVIDADES REGULARES
+  const handleActividadChange = useCallback(
+    (index: number, actividad: ActividadRegular) => {
+      const nuevas = [...actividadesRegulares];
+      nuevas[index] = actividad;
+      setActividadesRegulares(nuevas);
+    },
+    [actividadesRegulares, setActividadesRegulares]
+  );
 
-  // Manejadores
-  const handleRegistroChange = useCallback((index: number, registro: Registro) => {
-    const nuevos = [...registros];
-    nuevos[index] = registro;
-    setRegistros(nuevos);
-  }, [registros, setRegistros]);
-
-  const handleCargarParticipantes = useCallback(
+  const handleCargarParticipantesActividad = useCallback(
     async (index: number) => {
-      const registro = registros[index];
+      const actividad = actividadesRegulares[index];
 
-      if (registro.estadoActividad !== "realizada") {
-        alert("No se puede registrar asistencia si la actividad no se realizó");
+      if (actividad.estadoActividad !== "realizada") {
+        alert("La actividad no se realizó");
         return;
       }
 
       try {
         const q = query(
           collection(db, "participantes"),
-          where("comunidadId", "==", registro.comunidadId),
+          where("comunidadId", "==", actividad.comunidadId),
           where("estado", "==", "activo")
         );
 
@@ -910,7 +1575,7 @@ export default function SeguimientoPage() {
           ...d.data(),
         } as Participante));
 
-        setParticipantesPorRegistro((prev) => ({
+        setParticipantesPorActividad((prev) => ({
           ...prev,
           [index]: lista,
         }));
@@ -919,36 +1584,36 @@ export default function SeguimientoPage() {
         console.error(err);
       }
     },
-    [registros]
+    [actividadesRegulares]
   );
 
-  const handleToggleAsistencia = useCallback(
+  const handleToggleAsistenciaActividad = useCallback(
     (regIndex: number, participanteId: string) => {
       if (bloqueado) return;
 
-      const nuevos = [...registros];
-      const asistentes = nuevos[regIndex].asistentesIds;
+      const nuevas = [...actividadesRegulares];
+      const asistentes = nuevas[regIndex].asistentesIds;
 
       if (asistentes.includes(participanteId)) {
-        nuevos[regIndex].asistentesIds = asistentes.filter(
+        nuevas[regIndex].asistentesIds = asistentes.filter(
           (id) => id !== participanteId
         );
       } else {
-        nuevos[regIndex].asistentesIds.push(participanteId);
+        nuevas[regIndex].asistentesIds.push(participanteId);
       }
 
-      const total = participantesPorRegistro[regIndex]?.length || 0;
-      const count = nuevos[regIndex].asistentesIds.length;
+      const total = participantesPorActividad[regIndex]?.length || 0;
+      const count = nuevas[regIndex].asistentesIds.length;
 
-      nuevos[regIndex].porcentajeAsistencia =
+      nuevas[regIndex].porcentajeAsistencia =
         total > 0 ? Math.round((count / total) * 100) : 0;
 
-      setRegistros(nuevos);
+      setActividadesRegulares(nuevas);
     },
-    [registros, participantesPorRegistro, bloqueado, setRegistros]
+    [actividadesRegulares, participantesPorActividad, bloqueado, setActividadesRegulares]
   );
 
-  const handleSubirFoto = useCallback(
+  const handleSubirFotoActividad = useCallback(
     async (index: number, file: File) => {
       if (!user || bloqueado) return;
 
@@ -956,37 +1621,36 @@ export default function SeguimientoPage() {
         const ruta = `seguimientos/${user.uid}/fotos/${Date.now()}_${file.name}`;
         const url = await subirArchivo(file, ruta);
 
-        const nuevos = [...registros];
-        nuevos[index].evidenciasFotos.push(url);
-        setRegistros(nuevos);
+        const nuevas = [...actividadesRegulares];
+        nuevas[index].evidenciasFotos.push(url);
+        setActividadesRegulares(nuevas);
       } catch (error) {
-        console.error("Error al subir foto:", error);
         throw error;
       }
     },
-    [user, bloqueado, registros, setRegistros, subirArchivo]
+    [user, bloqueado, actividadesRegulares, setActividadesRegulares, subirArchivo]
   );
 
-  const handleEliminarFoto = useCallback(
+  const handleEliminarFotoActividad = useCallback(
     async (index: number, fotoIndex: number) => {
       if (bloqueado) return;
 
-      const nuevos = [...registros];
-      const url = nuevos[index].evidenciasFotos[fotoIndex];
+      const nuevas = [...actividadesRegulares];
+      const url = nuevas[index].evidenciasFotos[fotoIndex];
 
       try {
         await eliminarArchivo(url);
       } catch (error) {
-        console.error("Error al eliminar foto:", error);
+        console.error(error);
       }
 
-      nuevos[index].evidenciasFotos.splice(fotoIndex, 1);
-      setRegistros(nuevos);
+      nuevas[index].evidenciasFotos.splice(fotoIndex, 1);
+      setActividadesRegulares(nuevas);
     },
-    [registros, bloqueado, setRegistros, eliminarArchivo]
+    [actividadesRegulares, bloqueado, setActividadesRegulares, eliminarArchivo]
   );
 
-  const handleSubirPDF = useCallback(
+  const handleSubirPDFActividad = useCallback(
     async (index: number, file: File) => {
       if (!user || bloqueado) return;
 
@@ -994,52 +1658,174 @@ export default function SeguimientoPage() {
         const ruta = `seguimientos/${user.uid}/listas/${Date.now()}_${file.name}`;
         const url = await subirArchivo(file, ruta);
 
-        const nuevos = [...registros];
-        nuevos[index].evidenciaListaPdf = url;
-        setRegistros(nuevos);
+        const nuevas = [...actividadesRegulares];
+        nuevas[index].evidenciaListaPdf = url;
+        setActividadesRegulares(nuevas);
       } catch (error) {
-        console.error("Error al subir PDF:", error);
         throw error;
       }
     },
-    [user, bloqueado, registros, setRegistros, subirArchivo]
+    [user, bloqueado, actividadesRegulares, setActividadesRegulares, subirArchivo]
   );
 
-  const handleEliminarPDF = useCallback(
+  const handleEliminarPDFActividad = useCallback(
     (index: number) => {
       if (bloqueado) return;
 
-      const nuevos = [...registros];
-      nuevos[index].evidenciaListaPdf = "";
-      setRegistros(nuevos);
+      const nuevas = [...actividadesRegulares];
+      nuevas[index].evidenciaListaPdf = "";
+      setActividadesRegulares(nuevas);
     },
-    [registros, bloqueado, setRegistros]
+    [actividadesRegulares, bloqueado, setActividadesRegulares]
   );
 
+  // MANEJADORES REUNIONES
+  const handleReunionChange = useCallback(
+    (index: number, reunion: SeguimientoReunion) => {
+      const nuevas = [...reuniones];
+      nuevas[index] = reunion;
+      setReuniones(nuevas);
+    },
+    [reuniones, setReuniones]
+  );
+
+  // MANEJADORES ENCUENTROS
+  const handleEncuentroChange = useCallback(
+    (index: number, encuentro: SeguimientoEncuentro) => {
+      const nuevos = [...encuentros];
+      nuevos[index] = encuentro;
+      setEncuentros(nuevos);
+    },
+    [encuentros, setEncuentros]
+  );
+
+  const handleCargarParticipantesEncuentro = useCallback(
+    async (eventoIdx: number, comunidadId: string) => {
+      try {
+        const q = query(
+          collection(db, "participantes"),
+          where("comunidadId", "==", comunidadId),
+          where("estado", "==", "activo")
+        );
+
+        const snapshot = await getDocs(q);
+        const lista = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        } as Participante));
+
+        setParticipantesPorActividad((prev) => ({
+          ...prev,
+          [`encuentro_${eventoIdx}_${comunidadId}`]: lista,
+        }));
+      } catch (err) {
+        alert("Error al cargar participantes");
+        console.error(err);
+      }
+    },
+    []
+  );
+
+  const handleToggleAsistenciaEncuentro = useCallback(
+    (eventoIdx: number, comIdx: number, participanteId: string) => {
+      if (bloqueado) return;
+
+      const nuevos = [...encuentros];
+      const encuentro = nuevos[eventoIdx];
+      const ej = encuentro.comunidadesEjecutadas[comIdx];
+
+      if (!ej) return;
+
+      if (ej.asistentesIds.includes(participanteId)) {
+        ej.asistentesIds = ej.asistentesIds.filter((id) => id !== participanteId);
+      } else {
+        ej.asistentesIds.push(participanteId);
+      }
+
+      // Calcular porcentaje
+      const comunidad = encuentro.comunidadesConfirmadas[comIdx];
+      const participantesCom = (
+        participantesPorActividad[`encuentro_${eventoIdx}_${comunidad.comunidadId}`] || []
+      ).filter((p) => p.comunidadId === comunidad.comunidadId);
+
+      ej.porcentajeAsistencia =
+        participantesCom.length > 0
+          ? Math.round((ej.asistentesIds.length / participantesCom.length) * 100)
+          : 0;
+
+      setEncuentros(nuevos);
+    },
+    [encuentros, participantesPorActividad, bloqueado, setEncuentros]
+  );
+
+  const handleSubirFotoEncuentro = useCallback(
+    async (eventoIdx: number, comIdx: number, file: File) => {
+      if (!user || bloqueado) return;
+
+      try {
+        const ruta = `seguimientos/${user.uid}/eventos/${Date.now()}_${file.name}`;
+        const url = await subirArchivo(file, ruta);
+
+        const nuevos = [...encuentros];
+        nuevos[eventoIdx].comunidadesEjecutadas[comIdx].evidenciasFotos.push(url);
+        setEncuentros(nuevos);
+      } catch (error) {
+        throw error;
+      }
+    },
+    [user, bloqueado, encuentros, setEncuentros, subirArchivo]
+  );
+
+  const handleEliminarFotoEncuentro = useCallback(
+    async (eventoIdx: number, comIdx: number, fotoIndex: number) => {
+      if (bloqueado) return;
+
+      const nuevos = [...encuentros];
+      const url = nuevos[eventoIdx].comunidadesEjecutadas[comIdx].evidenciasFotos[fotoIndex];
+
+      try {
+        await eliminarArchivo(url);
+      } catch (error) {
+        console.error(error);
+      }
+
+      nuevos[eventoIdx].comunidadesEjecutadas[comIdx].evidenciasFotos.splice(fotoIndex, 1);
+      setEncuentros(nuevos);
+    },
+    [encuentros, bloqueado, setEncuentros, eliminarArchivo]
+  );
+
+  // GUARDAR SEGUIMIENTO
   const handleGuardarSeguimiento = useCallback(
     async (estado: "borrador" | "enviado") => {
       if (estado === "enviado") {
         const confirmar = confirm(
-          "¿Seguro que desea enviar el seguimiento? No podrá realizar cambios después."
+          "¿Enviar seguimiento? No podrá realizar cambios después."
         );
         if (!confirmar) return;
       }
 
-      const exito = await guardarSeguimiento(registros, estado);
+      const exito = await guardarSeguimiento(
+        actividadesRegulares,
+        reuniones,
+        encuentros,
+        estado
+      );
 
       if (exito) {
         alert(
           estado === "enviado"
-            ? "Seguimiento enviado correctamente"
-            : "Seguimiento guardado como borrador"
+            ? "✅ Seguimiento enviado"
+            : "💾 Borrador guardado"
         );
       } else {
-        alert("Error al guardar el seguimiento");
+        alert("❌ Error al guardar");
       }
     },
-    [registros, guardarSeguimiento]
+    [actividadesRegulares, reuniones, encuentros, guardarSeguimiento]
   );
 
+  // GENERAR PDF
   const handleGenerarPDF = useCallback(() => {
     if (!semanaActiva || !user) return;
 
@@ -1049,33 +1835,27 @@ export default function SeguimientoPage() {
 
     let yPosition = 15;
 
-    // ============ ENCABEZADO CON LOGO ============
-    doc.setFillColor(76, 175, 80); // Verde de Plan Internacional
+    // Encabezado
+    doc.setFillColor(76, 175, 80);
     doc.rect(15, 10, 8, 8, "F");
     doc.setFontSize(10);
     doc.setTextColor(76, 175, 80);
-    doc.text("GAD Municipal del Cantón", 25, 12);
-    doc.text("Montecristi", 25, 16);
+    doc.text("GAD Montecristi", 25, 15);
 
-    // Título principal
     yPosition = 28;
     doc.setFontSize(14);
     doc.setTextColor(0, 0, 0);
     doc.setFont("helvetica", "bold");
-    doc.text("SEGUIMIENTO SEMANAL DE ACTIVIDADES", pageWidth / 2, yPosition, {
+    doc.text("SEGUIMIENTO SEMANAL INTEGRAL", pageWidth / 2, yPosition, {
       align: "center",
     });
 
-    // ============ INFORMACIÓN GENERAL ============
+    // Información general
     yPosition = 38;
     const infoData = [
       ["Proyecto:", "Montecristi Crece en Valores"],
-      ["Semana:", `${semanaActiva.fechaInicio} al ${semanaActiva.fechaFin}`],
+      ["Semana:", `${semanaActiva.fechaInicio} - ${semanaActiva.fechaFin}`],
       ["Técnico:", user.displayName || "Técnico"],
-      [
-        "Comunidades Asignadas:",
-        registros.map((r) => r.comunidadNombre).join(", "),
-      ],
     ];
 
     autoTable(doc, {
@@ -1088,130 +1868,377 @@ export default function SeguimientoPage() {
           fontStyle: "bold",
           fillColor: [76, 175, 80],
           textColor: [255, 255, 255],
-          halign: "left",
         },
-        1: {
-          cellWidth: pageWidth - 70,
-          halign: "left",
-        },
+        1: { cellWidth: pageWidth - 70 },
       },
       margin: { left: 15, right: 15 },
     });
 
-    // Obtener Y position después de la tabla de información
     yPosition = (doc as any).lastAutoTable.finalY + 10;
 
-    // ============ SECCIÓN DE ACTIVIDADES EJECUTADAS ============
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
-    doc.text("ACTIVIDADES EJECUTADAS", 15, yPosition);
+    // ============ SECCIÓN: ACTIVIDADES REGULARES ============
+    if (actividadesRegulares.length > 0) {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.setTextColor(76, 175, 80);
+      doc.text("📋 ACTIVIDADES REGULARES", 15, yPosition);
 
-    yPosition += 7;
+      yPosition += 8;
 
-    // Preparar datos de actividades
-    const actividadesTableData = registros.map((reg, idx) => [
-      String(idx + 1),
-      reg.comunidadNombre,
-      reg.actividadPlanificada.substring(0, 20) + "...",
-      reg.actividadRealizada || "-",
-      reg.fecha || "-",
-      reg.porcentajeAsistencia + "%",
-      reg.asistentesIds.length,
-      estadoSeguimiento === "enviado" ? "✓ Enviado" : "📝 Borrador",
-      reg.evidenciasFotos.length > 0 && reg.evidenciaListaPdf
-        ? "✓ Completa"
-        : "Incompleta",
-    ]);
+      const actividadesTableData = actividadesRegulares.map((act, idx) => [
+        String(idx + 1),
+        act.comunidadNombre,
+        act.actividadPlanificada.substring(0, 25) + "...",
+        act.actividadRealizada || "-",
+        act.fecha || "-",
+        act.porcentajeAsistencia + "%",
+        act.estadoActividad,
+      ]);
 
-    autoTable(doc, {
-      startY: yPosition,
-      head: [
-        [
-          "N°",
-          "Comunidad",
-          "Componente",
-          "Actividad Realizada",
-          "Fecha",
-          "% Asistencia",
-          "Participantes",
-          "Estado",
-          "Evidencia",
+      autoTable(doc, {
+        startY: yPosition,
+        head: [
+          [
+            "N°",
+            "Comunidad",
+            "Actividad Planificada",
+            "Ejecutada",
+            "Fecha",
+            "% Asistencia",
+            "Estado",
+          ],
         ],
-      ],
-      body: actividadesTableData,
-      headStyles: {
-        fillColor: [76, 175, 80],
-        textColor: [255, 255, 255],
-        fontStyle: "bold",
-        halign: "center",
-        valign: "middle",
-        fontSize: 9,
-      },
-      bodyStyles: {
-        fontSize: 8,
-        halign: "center",
-        valign: "middle",
-      },
-      columnStyles: {
-        0: { cellWidth: 8 },
-        1: { cellWidth: 20, halign: "left" },
-        2: { cellWidth: 20, halign: "left" },
-        3: { cellWidth: 25, halign: "left" },
-        4: { cellWidth: 15 },
-        5: { cellWidth: 15 },
-        6: { cellWidth: 15 },
-        7: { cellWidth: 15 },
-        8: { cellWidth: 15 },
-      },
-      margin: { left: 15, right: 15 },
-    });
+        body: actividadesTableData,
+        headStyles: {
+          fillColor: [76, 175, 80],
+          textColor: [255, 255, 255],
+          fontStyle: "bold",
+          fontSize: 9,
+        },
+        bodyStyles: {
+          fontSize: 8,
+        },
+        columnStyles: {
+          0: { cellWidth: 8 },
+          1: { cellWidth: 25, halign: "left" },
+          2: { cellWidth: 30, halign: "left" },
+          3: { cellWidth: 30, halign: "left" },
+          4: { cellWidth: 15 },
+          5: { cellWidth: 15 },
+          6: { cellWidth: 15 },
+        },
+        margin: { left: 15, right: 15 },
+      });
 
-    yPosition = (doc as any).lastAutoTable.finalY + 8;
+      yPosition = (doc as any).lastAutoTable.finalY + 10;
+    }
 
-    // ============ SECCIÓN DE RESUMEN ============
+    // ============ SECCIÓN: REUNIONES ============
+    if (reuniones.length > 0) {
+      if (yPosition > pageHeight - 60) {
+        doc.addPage();
+        yPosition = 15;
+      }
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.setTextColor(255, 193, 7);
+      doc.text("📋 REUNIONES DE TÉCNICOS", 15, yPosition);
+
+      yPosition += 8;
+
+      const reunionesTableData = reuniones.map((r, idx) => [
+        String(idx + 1),
+        r.eventoTitulo.substring(0, 25) + "...",
+        new Date(r.fecha).toLocaleDateString("es-ES"),
+        r.confirmado ? "✓ Confirmado" : "✗ No confirmado",
+        r.estado,
+      ]);
+
+      autoTable(doc, {
+        startY: yPosition,
+        head: [["N°", "Reunión", "Fecha", "Confirmación", "Estado"]],
+        body: reunionesTableData,
+        headStyles: {
+          fillColor: [255, 193, 7],
+          textColor: [0, 0, 0],
+          fontStyle: "bold",
+          fontSize: 9,
+        },
+        bodyStyles: {
+          fontSize: 8,
+        },
+        columnStyles: {
+          0: { cellWidth: 8 },
+          1: { cellWidth: 40, halign: "left" },
+          2: { cellWidth: 25 },
+          3: { cellWidth: 25 },
+          4: { cellWidth: 22 },
+        },
+        margin: { left: 15, right: 15 },
+      });
+
+      yPosition = (doc as any).lastAutoTable.finalY + 10;
+
+      // Detalle de reuniones
+      reuniones.forEach((reunion, reunionIdx) => {
+        if (yPosition > pageHeight - 40) {
+          doc.addPage();
+          yPosition = 15;
+        }
+
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(11);
+        doc.setTextColor(255, 193, 7);
+        doc.text(`📌 ${reunion.eventoTitulo}`, 15, yPosition);
+
+        yPosition += 6;
+
+        const detalleData = [
+          ["Fecha:", new Date(reunion.fecha).toLocaleDateString("es-ES")],
+          ["Horario:", reunion.horario],
+          ["Lugar:", reunion.lugar],
+          ["Confirmado:", reunion.confirmado ? "Sí" : "No"],
+          ["Estado:", reunion.estado],
+          ["Observaciones:", reunion.observaciones || "-"],
+        ];
+
+        autoTable(doc, {
+          startY: yPosition,
+          head: [],
+          body: detalleData,
+          columnStyles: {
+            0: {
+              cellWidth: 30,
+              fontStyle: "bold",
+              fillColor: [240, 240, 240],
+            },
+            1: { cellWidth: pageWidth - 60 },
+          },
+          margin: { left: 15, right: 15 },
+        });
+
+        yPosition = (doc as any).lastAutoTable.finalY + 8;
+
+        // Separador
+        doc.setDrawColor(200, 200, 200);
+        doc.line(15, yPosition, pageWidth - 15, yPosition);
+        yPosition += 4;
+      });
+    }
+
+    // ============ SECCIÓN: ENCUENTROS ============
+    if (encuentros.length > 0) {
+      if (yPosition > pageHeight - 60) {
+        doc.addPage();
+        yPosition = 15;
+      }
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.setTextColor(255, 127, 14);
+      doc.text("📅 ENCUENTROS COMUNITARIOS", 15, yPosition);
+
+      yPosition += 8;
+
+      const encuentrosTableData = encuentros.map((e, idx) => [
+        String(idx + 1),
+        e.eventoTitulo.substring(0, 20) + "...",
+        e.tipoEvento,
+        new Date(e.fecha).toLocaleDateString("es-ES"),
+        e.estado,
+        e.comunidadesConfirmadas.filter((c) => c.participa === "si").length,
+      ]);
+
+      autoTable(doc, {
+        startY: yPosition,
+        head: [
+          [
+            "N°",
+            "Evento",
+            "Tipo",
+            "Fecha",
+            "Estado",
+            "Comunidades",
+          ],
+        ],
+        body: encuentrosTableData,
+        headStyles: {
+          fillColor: [255, 127, 14],
+          textColor: [255, 255, 255],
+          fontStyle: "bold",
+          fontSize: 9,
+        },
+        bodyStyles: {
+          fontSize: 8,
+        },
+        columnStyles: {
+          0: { cellWidth: 8 },
+          1: { cellWidth: 35, halign: "left" },
+          2: { cellWidth: 25, halign: "left" },
+          3: { cellWidth: 20 },
+          4: { cellWidth: 20 },
+          5: { cellWidth: 20 },
+        },
+        margin: { left: 15, right: 15 },
+      });
+
+      yPosition = (doc as any).lastAutoTable.finalY + 10;
+
+      // Detalle de encuentros por comunidad
+      encuentros.forEach((evento, eventoIdx) => {
+        if (yPosition > pageHeight - 40) {
+          doc.addPage();
+          yPosition = 15;
+        }
+
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(11);
+        doc.setTextColor(255, 127, 14);
+        doc.text(`📌 ${evento.eventoTitulo}`, 15, yPosition);
+
+        yPosition += 6;
+
+        const eventoDetalleData = [
+          ["Tipo:", evento.tipoEvento],
+          ["Fecha:", new Date(evento.fecha).toLocaleDateString("es-ES")],
+          ["Horario:", evento.horario],
+          ["Lugar:", evento.lugar],
+          ["Estado Ejecución:", evento.estado],
+        ];
+
+        if (evento.motivoNoEjecucion) {
+          eventoDetalleData.push(["Motivo:", evento.motivoNoEjecucion]);
+        }
+
+        autoTable(doc, {
+          startY: yPosition,
+          head: [],
+          body: eventoDetalleData,
+          columnStyles: {
+            0: {
+              cellWidth: 30,
+              fontStyle: "bold",
+              fillColor: [240, 240, 240],
+            },
+            1: { cellWidth: pageWidth - 60 },
+          },
+          margin: { left: 15, right: 15 },
+        });
+
+        yPosition = (doc as any).lastAutoTable.finalY + 6;
+
+        // Detalle por comunidad del evento
+        if (evento.comunidadesEjecutadas.length > 0) {
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(10);
+          doc.setTextColor(0, 0, 0);
+          doc.text("Comunidades Ejecutadas:", 15, yPosition);
+
+          yPosition += 5;
+
+          const comEjecTableData = evento.comunidadesEjecutadas.map((com) => [
+            com.comunidadNombre,
+            com.actividadRealizada || "-",
+            com.porcentajeAsistencia + "%",
+            com.asistentesIds.length,
+            com.evidenciasFotos.length > 0 ? "✓" : "-",
+          ]);
+
+          autoTable(doc, {
+            startY: yPosition,
+            head: [["Comunidad", "Actividad", "% Asistencia", "Participantes", "Fotos"]],
+            body: comEjecTableData,
+            headStyles: {
+              fillColor: [220, 220, 220],
+              textColor: [0, 0, 0],
+              fontStyle: "bold",
+              fontSize: 8,
+            },
+            bodyStyles: {
+              fontSize: 8,
+            },
+            columnStyles: {
+              0: { cellWidth: 30, halign: "left" },
+              1: { cellWidth: 40, halign: "left" },
+              2: { cellWidth: 18 },
+              3: { cellWidth: 18 },
+              4: { cellWidth: 14 },
+            },
+            margin: { left: 15, right: 15 },
+          });
+
+          yPosition = (doc as any).lastAutoTable.finalY + 8;
+        }
+
+        // Separador
+        doc.setDrawColor(200, 200, 200);
+        doc.line(15, yPosition, pageWidth - 15, yPosition);
+        yPosition += 4;
+      });
+    }
+
+    // ============ RESUMEN GENERAL ============
+    if (yPosition > pageHeight - 40) {
+      doc.addPage();
+      yPosition = 15;
+    }
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.setTextColor(76, 175, 80);
+    doc.text("📊 RESUMEN GENERAL", 15, yPosition);
+
+    yPosition += 8;
+
     const resumenData = [
       [
-        "Total de Actividades Planificadas:",
-        String(registros.length),
+        "Total Actividades Planificadas:",
+        String(actividadesRegulares.length),
       ],
       [
         "Actividades Realizadas:",
         String(
-          registros.filter((r) => r.estadoActividad === "realizada").length
+          actividadesRegulares.filter((a) => a.estadoActividad === "realizada")
+            .length
         ),
       ],
       [
-        "Actividades Suspendidas/Canceladas:",
-        String(
-          registros.filter(
-            (r) =>
-              r.estadoActividad === "suspendida" ||
-              r.estadoActividad === "cancelada"
-          ).length
-        ),
-      ],
-      [
-        "Actividades Reprogramadas:",
-        String(
-          registros.filter((r) => r.estadoActividad === "reprogramada").length
-        ),
-      ],
-      [
-        "Asistencia Promedio:",
+        "Promedio Asistencia Actividades:",
         String(
           Math.round(
-            registros.reduce((acc, r) => acc + r.porcentajeAsistencia, 0) /
-              registros.length
+            actividadesRegulares.reduce(
+              (acc, a) => acc + a.porcentajeAsistencia,
+              0
+            ) / Math.max(actividadesRegulares.length, 1)
+          )
+        ) + "%",
+      ],
+      ["Total Reuniones:", String(reuniones.length)],
+      [
+        "Reuniones Realizadas:",
+        String(reuniones.filter((r) => r.estado === "realizada").length),
+      ],
+      ["Total Encuentros:", String(encuentros.length)],
+      [
+        "Encuentros Realizados:",
+        String(encuentros.filter((e) => e.estado === "realizada").length),
+      ],
+      [
+        "Promedio Asistencia Encuentros:",
+        String(
+          Math.round(
+            encuentros
+              .flatMap((e) => e.comunidadesEjecutadas)
+              .reduce((acc, c) => acc + c.porcentajeAsistencia, 0) /
+              Math.max(
+                encuentros.flatMap((e) => e.comunidadesEjecutadas).length,
+                1
+              )
           )
         ) + "%",
       ],
     ];
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
-    doc.text("RESUMEN GENERAL", 15, yPosition);
-
-    yPosition += 7;
 
     autoTable(doc, {
       startY: yPosition,
@@ -1222,8 +2249,6 @@ export default function SeguimientoPage() {
           cellWidth: 60,
           fontStyle: "bold",
           fillColor: [240, 240, 240],
-          textColor: [0, 0, 0],
-          halign: "left",
         },
         1: {
           cellWidth: pageWidth - 90,
@@ -1236,112 +2261,24 @@ export default function SeguimientoPage() {
       margin: { left: 15, right: 15 },
     });
 
-    yPosition = (doc as any).lastAutoTable.finalY + 10;
-
-    // ============ SECCIÓN DE DETALLE POR COMUNIDAD ============
-    registros.forEach((reg, index) => {
-      // Verificar si necesita nueva página
-      if (yPosition > pageHeight - 40) {
-        doc.addPage();
-        yPosition = 15;
-      }
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(10);
-      doc.setTextColor(76, 175, 80);
-      doc.text(`DETALLE - ${reg.comunidadNombre}`, 15, yPosition);
-
-      yPosition += 6;
-
-      const detalleData = [
-        ["Actividad Planificada:", reg.actividadPlanificada],
-        ["Actividad Realizada:", reg.actividadRealizada || "No realizada"],
-        ["Tipo de Ejecución:", reg.tipoEjecucionActividad],
-        [
-          "Motivo de Cambio:",
-          reg.motivoCambioActividad || "Sin cambios",
-        ],
-        ["Estado:", reg.estadoActividad],
-        [
-          "Motivo No Realizada:",
-          reg.motivoNoRealizada || "-",
-        ],
-        [
-          "Fecha Reprogramada:",
-          reg.fechaReprogramada || "-",
-        ],
-        ["Participantes Asistentes:", `${reg.asistentesIds.length}`],
-        ["% Asistencia:", `${reg.porcentajeAsistencia}%`],
-        [
-          "Evidencias Fotográficas:",
-          reg.evidenciasFotos.length > 0
-            ? `${reg.evidenciasFotos.length} fotos`
-            : "Sin fotos",
-        ],
-        [
-          "Lista PDF:",
-          reg.evidenciaListaPdf ? "Sí" : "No",
-        ],
-      ];
-
-      autoTable(doc, {
-        startY: yPosition,
-        head: [],
-        body: detalleData,
-        columnStyles: {
-          0: {
-            cellWidth: 40,
-            fontStyle: "bold",
-            fillColor: [240, 240, 240],
-            textColor: [0, 0, 0],
-            halign: "left",
-            fontSize: 8,
-          },
-          1: {
-            cellWidth: pageWidth - 70,
-            halign: "left",
-            fontSize: 8,
-          },
-        },
-        margin: { left: 15, right: 15 },
-      });
-
-      yPosition = (doc as any).lastAutoTable.finalY + 8;
-
-      // Separador entre comunidades
-      if (index < registros.length - 1) {
-        doc.setDrawColor(200, 200, 200);
-        doc.line(15, yPosition, pageWidth - 15, yPosition);
-        yPosition += 4;
-      }
-    });
-
     // ============ PIE DE PÁGINA ============
     const paginasTotal = doc.getNumberOfPages();
 
     for (let i = 1; i <= paginasTotal; i++) {
       doc.setPage(i);
 
-      // Línea separadora
       doc.setDrawColor(76, 175, 80);
       doc.setLineWidth(0.5);
       doc.line(15, pageHeight - 15, pageWidth - 15, pageHeight - 15);
 
-      // Texto pie de página
       doc.setFontSize(8);
       doc.setTextColor(100, 100, 100);
       doc.text(
-        `Montecristi Crece en Valores - Seguimiento Semanal`,
+        "Montecristi Crece en Valores - Seguimiento Integral",
         15,
         pageHeight - 10
       );
-      doc.text(
-        `Página ${i} de ${paginasTotal}`,
-        pageWidth - 35,
-        pageHeight - 10
-      );
-
-      // Fecha de generación
+      doc.text(`Página ${i} de ${paginasTotal}`, pageWidth - 35, pageHeight - 10);
       doc.text(
         `Generado: ${new Date().toLocaleDateString("es-ES")}`,
         pageWidth / 2,
@@ -1350,29 +2287,26 @@ export default function SeguimientoPage() {
       );
     }
 
-    // ============ DESCARGAR ============
     const nombreArchivo = `Seguimiento_${semanaActiva.fechaInicio}_${semanaActiva.fechaFin}.pdf`;
     doc.save(nombreArchivo);
-  }, [semanaActiva, user, registros, estadoSeguimiento]);
+  }, [semanaActiva, user, actividadesRegulares, reuniones, encuentros]);
 
-  // UI: Cargando
+  // ============ RENDER ============
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center space-y-4">
           <div className="animate-spin text-4xl">⏳</div>
-          <p className="text-gray-600 font-medium">
-            Cargando seguimiento...
-          </p>
+          <p className="text-gray-600 font-medium">Cargando seguimiento...</p>
         </div>
       </div>
     );
   }
 
-  // UI: Error
   if (error) {
     return (
-      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 m-6">
         <p className="text-yellow-800 font-medium">⚠️ {error}</p>
       </div>
     );
@@ -1380,12 +2314,12 @@ export default function SeguimientoPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
-      <div className="max-w-5xl mx-auto space-y-6">
+      <div className="max-w-6xl mx-auto space-y-6">
         {/* Encabezado */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold text-gray-900">
-              📋 Seguimiento Semanal
+              📋 Seguimiento Semanal Integral
             </h1>
             {semanaActiva && (
               <p className="text-gray-600 mt-1">
@@ -1405,78 +2339,147 @@ export default function SeguimientoPage() {
         </div>
 
         {/* Alertas de eventos */}
-        {alertaMostrada !== null &&
-          alertas.find((a) => a.id === alertaMostrada) && (
-            <CardAlerta
-              alerta={alertas.find((a) => a.id === alertaMostrada)!}
-              onClose={() => setAlertaMostrada(null)}
-            />
-          )}
+        {alertas.length > 0 && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <p className="text-blue-800 font-medium">
+              🔔 Tienes {alertas.length} evento(s) pendiente(s) de confirmar en Planificación
+            </p>
+          </div>
+        )}
 
-        {/* Mostrar si hay alertas sin mostrar */}
-        {alertas.length > 0 &&
-          !alertaMostrada &&
-          alertas.map((alerta) => (
-            <CardAlerta
-              key={alerta.id}
-              alerta={alerta}
-              onClose={() => setAlertaMostrada(alerta.id)}
-            />
-          ))}
-
-        {/* Registros de seguimiento */}
+        {/* Tabs para secciones */}
         <div className="space-y-6">
-          {registros.length === 0 ? (
-            <div className="bg-white rounded-lg shadow-md p-8 text-center text-gray-500">
-              <p className="text-lg">No hay actividades para seguimiento</p>
+          {/* SECCIÓN: ACTIVIDADES REGULARES */}
+          {actividadesRegulares.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <h2 className="text-2xl font-bold text-gray-900">
+                  📋 Actividades Regulares
+                </h2>
+                <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-semibold">
+                  {actividadesRegulares.length}
+                </span>
+              </div>
+
+              <div className="space-y-4">
+                {actividadesRegulares.map((actividad, index) => (
+                  <RegistroActividadRegular
+                    key={index}
+                    actividad={actividad}
+                    index={index}
+                    bloqueado={bloqueado}
+                    participantes={participantesPorActividad[index] || []}
+                    onActividadChange={handleActividadChange}
+                    onCargarParticipantes={handleCargarParticipantesActividad}
+                    onToggleAsistencia={handleToggleAsistenciaActividad}
+                    onSubirFoto={handleSubirFotoActividad}
+                    onEliminarFoto={handleEliminarFotoActividad}
+                    onSubirPDF={handleSubirPDFActividad}
+                    onEliminarPDF={handleEliminarPDFActividad}
+                  />
+                ))}
+              </div>
             </div>
-          ) : (
-            registros.map((registro, index) => (
-              <RegistroSeguimiento
-                key={index}
-                registro={registro}
-                index={index}
-                bloqueado={bloqueado}
-                participantes={participantesPorRegistro[index] || []}
-                onRegistroChange={handleRegistroChange}
-                onCargarParticipantes={handleCargarParticipantes}
-                onToggleAsistencia={handleToggleAsistencia}
-                onSubirFoto={handleSubirFoto}
-                onEliminarFoto={handleEliminarFoto}
-                onSubirPDF={handleSubirPDF}
-                onEliminarPDF={handleEliminarPDF}
-              />
-            ))
           )}
+
+          {/* SECCIÓN: REUNIONES */}
+          {reuniones.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <h2 className="text-2xl font-bold text-gray-900">
+                  📋 Reuniones de Técnicos
+                </h2>
+                <span className="bg-yellow-100 text-yellow-800 px-3 py-1 rounded-full text-sm font-semibold">
+                  {reuniones.length}
+                </span>
+              </div>
+
+              <div className="space-y-4">
+                {reuniones.map((reunion, index) => (
+                  <RegistroReunion
+                    key={index}
+                    reunion={reunion}
+                    index={index}
+                    bloqueado={bloqueado}
+                    onReunionChange={handleReunionChange}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* SECCIÓN: ENCUENTROS */}
+          {encuentros.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <h2 className="text-2xl font-bold text-gray-900">
+                  📅 Encuentros Comunitarios
+                </h2>
+                <span className="bg-orange-100 text-orange-800 px-3 py-1 rounded-full text-sm font-semibold">
+                  {encuentros.length}
+                </span>
+              </div>
+
+              <div className="space-y-4">
+                {encuentros.map((encuentro, index) => (
+                  <RegistroEncuentro
+                    key={index}
+                    encuentro={encuentro}
+                    index={index}
+                    bloqueado={bloqueado}
+                    participantes={participantesPorActividad[`encuentro_${index}`] || []}
+                    onEncuentroChange={handleEncuentroChange}
+                    onCargarParticipantes={handleCargarParticipantesEncuentro}
+                    onToggleAsistencia={handleToggleAsistenciaEncuentro}
+                    onSubirFoto={handleSubirFotoEncuentro}
+                    onEliminarFoto={handleEliminarFotoEncuentro}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {actividadesRegulares.length === 0 &&
+            reuniones.length === 0 &&
+            encuentros.length === 0 && (
+              <div className="bg-white rounded-lg shadow-md p-8 text-center text-gray-500">
+                <p className="text-lg">
+                  No hay actividades, reuniones ni encuentros para registrar seguimiento
+                </p>
+              </div>
+            )}
         </div>
 
         {/* Botones de acción */}
-        {!bloqueado && registros.length > 0 && (
-          <div className="bg-white rounded-lg shadow-md p-6 flex flex-col sm:flex-row gap-3">
-            <button
-              onClick={() => handleGuardarSeguimiento("borrador")}
-              disabled={procesando}
-              className="flex-1 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-400 text-white font-bold py-3 rounded-lg transition"
-            >
-              {procesando ? "⏳ Guardando..." : "💾 Guardar Borrador"}
-            </button>
+        {!bloqueado &&
+          (actividadesRegulares.length > 0 ||
+            reuniones.length > 0 ||
+            encuentros.length > 0) && (
+            <div className="bg-white rounded-lg shadow-md p-6 flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={() => handleGuardarSeguimiento("borrador")}
+                disabled={procesando}
+                className="flex-1 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-400 text-white font-bold py-3 rounded-lg transition"
+              >
+                {procesando ? "⏳ Guardando..." : "💾 Guardar Borrador"}
+              </button>
 
-            <button
-              onClick={() => handleGuardarSeguimiento("enviado")}
-              disabled={procesando}
-              className="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-bold py-3 rounded-lg transition"
-            >
-              {procesando ? "⏳ Enviando..." : "✅ Enviar Seguimiento"}
-            </button>
+              <button
+                onClick={() => handleGuardarSeguimiento("enviado")}
+                disabled={procesando}
+                className="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-bold py-3 rounded-lg transition"
+              >
+                {procesando ? "⏳ Enviando..." : "✅ Enviar Seguimiento"}
+              </button>
 
-            <button
-              onClick={handleGenerarPDF}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition"
-            >
-              📄 Descargar PDF
-            </button>
-          </div>
-        )}
+              <button
+                onClick={handleGenerarPDF}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition"
+              >
+                📄 Descargar PDF
+              </button>
+            </div>
+          )}
 
         {bloqueado && (
           <div className="bg-green-50 border border-green-200 rounded-lg p-4">

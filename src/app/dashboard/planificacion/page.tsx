@@ -65,7 +65,6 @@ interface EventoGlobal {
   lugar: string;
   objetivo: string;
   tipoEvento: string;
-  comunidadesIds?: string[];
   tecnicosIds: string[];
   [key: string]: any;
 }
@@ -78,6 +77,7 @@ interface Alerta {
   titulo: string;
   estado: "pendiente" | "confirmado" | "rechazado";
   confirmada?: boolean;
+  tipoEvento?: string;
   createdAt?: any;
   [key: string]: any;
 }
@@ -117,7 +117,7 @@ function useCargarDatos(userId: string | undefined) {
       } as Participante));
       setParticipantes(listaParticipantes);
 
-      // 4. Cargar eventos globales asignados
+      // 4. Cargar eventos globales asignados al técnico
       const eventosSnap = await getDocs(
         collection(db, "eventosGlobales")
       );
@@ -300,8 +300,82 @@ function CardAlerta({
   );
 }
 
-// ============ COMPONENTE: Modal de evento ============
-interface ModalEventoProps {
+// ============ COMPONENTE: Modal Reunión (Confirmación simple) ============
+interface ModalReunionProps {
+  evento: EventoGlobal;
+  onConfirmar: () => void;
+  onRechazar: () => void;
+  procesando: boolean;
+  onClose: () => void;
+}
+
+function ModalReunion({
+  evento,
+  onConfirmar,
+  onRechazar,
+  procesando,
+  onClose,
+}: ModalReunionProps) {
+  return (
+    <div className="bg-white rounded-lg shadow-lg p-6 space-y-4 max-h-96 overflow-y-auto">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-bold text-gray-900">Confirmar Asistencia</h2>
+        <button
+          onClick={onClose}
+          className="text-gray-500 hover:text-gray-700 text-2xl"
+        >
+          ✕
+        </button>
+      </div>
+
+      <div className="bg-blue-50 p-4 rounded space-y-2 text-sm">
+        <h3 className="font-bold text-gray-900">{evento.titulo}</h3>
+        <p>
+          <strong>📅 Fecha:</strong>{" "}
+          {new Date(evento.fecha).toLocaleDateString("es-ES")}
+        </p>
+        <p>
+          <strong>🕐 Horario:</strong> {evento.horario}
+        </p>
+        {evento.lugar && (
+          <p>
+            <strong>📍 Lugar:</strong> {evento.lugar}
+          </p>
+        )}
+        <p>
+          <strong>🎯 Objetivo:</strong> {evento.objetivo}
+        </p>
+      </div>
+
+      <div className="bg-yellow-50 border border-yellow-200 rounded p-3">
+        <p className="text-sm text-yellow-800">
+          ⚠️ Por favor confirma si asistirás a esta reunión de técnicos
+        </p>
+      </div>
+
+      <div className="flex gap-3">
+        <button
+          onClick={onConfirmar}
+          disabled={procesando}
+          className="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-bold py-2 rounded transition"
+        >
+          {procesando ? "⏳ Confirmando..." : "✓ Confirmar Asistencia"}
+        </button>
+
+        <button
+          onClick={onRechazar}
+          disabled={procesando}
+          className="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white font-bold py-2 rounded transition"
+        >
+          {procesando ? "⏳ Rechazando..." : "✕ No puedo asistir"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============ COMPONENTE: Modal Encuentro (Selección de comunidades y participantes) ============
+interface ModalEncuentroProps {
   evento: EventoGlobal;
   comunidades: Comunidad[];
   participantes: Participante[];
@@ -312,7 +386,7 @@ interface ModalEventoProps {
   onClose: () => void;
 }
 
-function ModalEvento({
+function ModalEncuentro({
   evento,
   comunidades,
   participantes,
@@ -321,12 +395,7 @@ function ModalEvento({
   onGuardar,
   procesando,
   onClose,
-}: ModalEventoProps) {
-  const es_reunion = evento.tipoEvento === "tecnicos";
-  const comunidadesDelEvento = comunidades.filter((c) =>
-    evento.comunidadesIds?.includes(c.id)
-  );
-
+}: ModalEncuentroProps) {
   return (
     <div className="bg-white rounded-lg shadow-lg p-6 space-y-4 max-h-96 overflow-y-auto">
       <div className="flex justify-between items-center">
@@ -357,15 +426,26 @@ function ModalEvento({
         </p>
       </div>
 
-      {!es_reunion && comunidadesDelEvento.length > 0 && (
-        <div className="space-y-3">
-          <h3 className="font-bold text-gray-900">Comunidades</h3>
-          {comunidadesDelEvento.map((comunidad) => (
+      <div className="bg-yellow-50 border border-yellow-200 rounded p-3">
+        <p className="text-sm text-yellow-800">
+          ℹ️ Selecciona las comunidades en las que participarás y los participantes
+          que asistirán
+        </p>
+      </div>
+
+      <div className="space-y-3">
+        <h3 className="font-bold text-gray-900">Comunidades</h3>
+        {comunidades.length === 0 ? (
+          <p className="text-gray-500 text-sm">
+            No tienes comunidades asignadas
+          </p>
+        ) : (
+          comunidades.map((comunidad) => (
             <div
               key={comunidad.id}
               className="border rounded-lg p-3 space-y-2 bg-gray-50"
             >
-              <label className="flex items-center gap-2 font-semibold">
+              <label className="flex items-center gap-2 font-semibold cursor-pointer">
                 <input
                   type="checkbox"
                   checked={
@@ -386,7 +466,7 @@ function ModalEvento({
               {respuestasEvento[comunidad.id]?.participa === "si" && (
                 <div className="space-y-2 ml-6">
                   <div>
-                    <label className="text-sm font-semibold text-gray-700">
+                    <label className="text-sm font-semibold text-gray-700 block mb-2">
                       Seleccionar participantes
                     </label>
 
@@ -465,6 +545,7 @@ function ModalEvento({
                       )
                     }
                     className="w-full border rounded p-2 text-sm"
+                    rows={2}
                   />
                 </div>
               )}
@@ -481,12 +562,13 @@ function ModalEvento({
                     )
                   }
                   className="w-full border rounded p-2 text-sm ml-6"
+                  rows={2}
                 />
               )}
             </div>
-          ))}
-        </div>
-      )}
+          ))
+        )}
+      </div>
 
       <button
         onClick={onGuardar}
@@ -528,6 +610,9 @@ export default function PlanificacionPage() {
   const [eventoModalActivo, setEventoModalActivo] = useState<string | null>(
     null
   );
+  const [tipoModalActivo, setTipoModalActivo] = useState<"reunion" | "encuentro" | null>(
+    null
+  );
   const [respuestasEvento, setRespuestasEvento] = useState<Record<string, any>>(
     {}
   );
@@ -548,7 +633,7 @@ export default function PlanificacionPage() {
     []
   );
 
-  const handleGuardarEvento = useCallback(
+  const handleConfirmarReunion = useCallback(
     async (eventoId: string) => {
       if (!user) return;
 
@@ -557,22 +642,108 @@ export default function PlanificacionPage() {
         await addDoc(collection(db, "respuestasEventos"), {
           eventoId,
           tecnicoId: user.uid,
+          tipoRespuesta: "reunion",
+          confirmado: true,
+          createdAt: serverTimestamp(),
+        });
+
+        alert("✅ Asistencia confirmada");
+        setEventoModalActivo(null);
+        setTipoModalActivo(null);
+        recargar();
+      } catch (error) {
+        alert("❌ Error al confirmar asistencia");
+        console.error(error);
+      } finally {
+        setProcesando(false);
+      }
+    },
+    [user, recargar]
+  );
+
+  const handleRechazarReunion = useCallback(
+    async (eventoId: string) => {
+      if (!user) return;
+
+      try {
+        setProcesando(true);
+        await addDoc(collection(db, "respuestasEventos"), {
+          eventoId,
+          tecnicoId: user.uid,
+          tipoRespuesta: "reunion",
+          confirmado: false,
+          createdAt: serverTimestamp(),
+        });
+
+        alert("✅ Respuesta registrada");
+        setEventoModalActivo(null);
+        setTipoModalActivo(null);
+        recargar();
+      } catch (error) {
+        alert("❌ Error al registrar respuesta");
+        console.error(error);
+      } finally {
+        setProcesando(false);
+      }
+    },
+    [user, recargar]
+  );
+
+  const handleGuardarEncuentro = useCallback(
+    async (eventoId: string) => {
+      if (!user) return;
+
+      // Validar que al menos una comunidad fue seleccionada
+      const algunaSeleccionada = Object.values(respuestasEvento).some(
+        (r: any) => r.participa === "si"
+      );
+
+      if (!algunaSeleccionada) {
+        alert("⚠️ Debes seleccionar al menos una comunidad");
+        return;
+      }
+
+      try {
+        setProcesando(true);
+        await addDoc(collection(db, "respuestasEventos"), {
+          eventoId,
+          tecnicoId: user.uid,
+          tipoRespuesta: "encuentro",
           respuestas: respuestasEvento,
           createdAt: serverTimestamp(),
         });
 
-        alert("Respuesta enviada correctamente");
+        alert("✅ Respuesta enviada correctamente");
         setEventoModalActivo(null);
+        setTipoModalActivo(null);
         setRespuestasEvento({});
         recargar();
       } catch (error) {
-        alert("Error al guardar la respuesta");
+        alert("❌ Error al guardar la respuesta");
         console.error(error);
       } finally {
         setProcesando(false);
       }
     },
     [user, respuestasEvento, recargar]
+  );
+
+  const handleAbreModalReunion = useCallback(
+    (eventoId: string) => {
+      setEventoModalActivo(eventoId);
+      setTipoModalActivo("reunion");
+      setRespuestasEvento({});
+    },
+    []
+  );
+
+  const handleAbreModalEncuentro = useCallback(
+    (eventoId: string) => {
+      setEventoModalActivo(eventoId);
+      setTipoModalActivo("encuentro");
+      setRespuestasEvento({});
+    },
+    []
   );
 
   const handleAgregarActividad = useCallback(() => {
@@ -675,11 +846,11 @@ export default function PlanificacionPage() {
         setEstado(nuevoEstado);
         alert(
           nuevoEstado === "enviado"
-            ? "Planificación enviada correctamente"
-            : "Borrador guardado"
+            ? "✅ Planificación enviada correctamente"
+            : "💾 Borrador guardado"
         );
       } catch (error) {
-        alert("Error al guardar la planificación");
+        alert("❌ Error al guardar la planificación");
         console.error(error);
       } finally {
         setProcesando(false);
@@ -766,7 +937,7 @@ export default function PlanificacionPage() {
 
   if (!semanaActiva) {
     return (
-      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 m-6">
         <p className="text-yellow-800 font-medium">
           ⚠️ No hay semana activa en el sistema
         </p>
@@ -776,7 +947,7 @@ export default function PlanificacionPage() {
 
   if (error) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+      <div className="bg-red-50 border border-red-200 rounded-lg p-4 m-6">
         <p className="text-red-800 font-medium">❌ {error}</p>
       </div>
     );
@@ -817,7 +988,7 @@ export default function PlanificacionPage() {
             <div className="flex items-center gap-2">
               <span className="text-2xl">🔔</span>
               <h2 className="text-xl font-bold text-gray-900">
-                Alertas Pendientes ({alertas.length})
+                Eventos Globales Pendientes ({alertas.length})
               </h2>
             </div>
 
@@ -825,14 +996,16 @@ export default function PlanificacionPage() {
               const evento = eventosGlobales.find(
                 (e) => e.id === alerta.eventoId
               );
+              const esReunion = alerta.tipo === "reunion";
+
               return (
                 <CardAlerta
                   key={alerta.id}
                   alerta={alerta}
                   evento={evento || null}
-                  onConfirmar={() => setEventoModalActivo(alerta.eventoId)}
+                  onConfirmar={() => handleAbreModalReunion(alerta.eventoId)}
                   onConfiguraParticipantes={() =>
-                    setEventoModalActivo(alerta.eventoId)
+                    handleAbreModalEncuentro(alerta.eventoId)
                   }
                   procesando={procesando}
                 />
@@ -841,19 +1014,35 @@ export default function PlanificacionPage() {
           </div>
         )}
 
-        {/* EVENTOS GLOBALES (MODAL FLOTANTE) */}
-        {eventoModalActivo && eventoActual && (
+        {/* MODALES */}
+        {eventoModalActivo && eventoActual && tipoModalActivo === "reunion" && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <ModalEvento
+            <ModalReunion
+              evento={eventoActual}
+              onConfirmar={() => handleConfirmarReunion(eventoActual.id)}
+              onRechazar={() => handleRechazarReunion(eventoActual.id)}
+              procesando={procesando}
+              onClose={() => {
+                setEventoModalActivo(null);
+                setTipoModalActivo(null);
+              }}
+            />
+          </div>
+        )}
+
+        {eventoModalActivo && eventoActual && tipoModalActivo === "encuentro" && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <ModalEncuentro
               evento={eventoActual}
               comunidades={comunidades}
               participantes={participantes}
               respuestasEvento={respuestasEvento}
               onRespuestaChange={handleActualizarRespuesta}
-              onGuardar={() => handleGuardarEvento(eventoActual.id)}
+              onGuardar={() => handleGuardarEncuentro(eventoActual.id)}
               procesando={procesando}
               onClose={() => {
                 setEventoModalActivo(null);
+                setTipoModalActivo(null);
                 setRespuestasEvento({});
               }}
             />

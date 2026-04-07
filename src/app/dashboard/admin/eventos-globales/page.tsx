@@ -29,14 +29,6 @@ interface Comunidad {
   [key: string]: any;
 }
 
-interface Participante {
-  id: string;
-  nombre: string;
-  comunidadId: string;
-  estado: "activo" | "inactivo";
-  [key: string]: any;
-}
-
 interface FormData {
   titulo: string;
   tipoEvento: "tecnicos" | "clubes" | "promotores" | "liderazgo" | "";
@@ -57,12 +49,7 @@ interface EventoGlobal {
   objetivo: string;
   producto: string;
   tecnicosIds: string[];
-  comunidadesData: Array<{
-    comunidadId: string;
-    comunidadNombre: string;
-    participantesIds: string[];
-    todosTodos?: boolean;
-  }>;
+  comunidadesIds?: string[]; // Solo para registrar a qué comunidades aplica (informativo)
   createdAt?: any;
   createdBy?: string;
 }
@@ -133,6 +120,13 @@ const validarFormulario = (form: FormData): ValidationError[] => {
     });
   }
 
+  if (!form.objetivo.trim()) {
+    errores.push({
+      field: "objetivo",
+      message: "El objetivo es requerido",
+    });
+  }
+
   return errores;
 };
 
@@ -140,7 +134,6 @@ const validarFormulario = (form: FormData): ValidationError[] => {
 function useCargarDatos() {
   const [tecnicos, setTecnicos] = useState<Tecnico[]>([]);
   const [comunidades, setComunidades] = useState<Comunidad[]>([]);
-  const [participantes, setParticipantes] = useState<Participante[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -169,14 +162,6 @@ function useCargarDatos() {
         .sort((a, b) => a.nombre.localeCompare(b.nombre));
 
       setComunidades(listaComunidades);
-
-      // Cargar participantes
-      const participantesSnap = await getDocs(collection(db, "participantes"));
-      const listaParticipantes = participantesSnap.docs
-        .map((d) => ({ id: d.id, ...d.data() } as Participante))
-        .filter((p) => p.estado === "activo");
-
-      setParticipantes(listaParticipantes);
     } catch (err) {
       const mensaje =
         err instanceof Error ? err.message : "Error al cargar datos";
@@ -191,7 +176,7 @@ function useCargarDatos() {
     cargar();
   }, [cargar]);
 
-  return { tecnicos, comunidades, participantes, loading, error, recargar: cargar };
+  return { tecnicos, comunidades, loading, error, recargar: cargar };
 }
 
 // ============ HOOK: Operaciones de eventos ============
@@ -215,7 +200,7 @@ function useOperacionesEventos() {
           objetivo: evento.objetivo,
           producto: evento.producto,
           tecnicosIds: evento.tecnicosIds,
-          comunidadesData: evento.comunidadesData,
+          comunidadesIds: evento.comunidadesIds || [], // Informativo
           createdBy: usuarioActualId,
           createdAt: serverTimestamp(),
           activo: true,
@@ -223,10 +208,12 @@ function useOperacionesEventos() {
 
         console.log("✅ Evento creado:", eventoRef.id);
 
-        // 2. Crear alertas para cada técnico
-        if (evento.tipoEvento === "tecnicos") {
-          // Reunión de técnicos
-          for (const tecnicoId of evento.tecnicosIds) {
+        // 2. Crear alertas para cada técnico según tipo de evento
+        const esReunion = evento.tipoEvento === "tecnicos";
+
+        for (const tecnicoId of evento.tecnicosIds) {
+          if (esReunion) {
+            // 🟢 REUNIÓN DE TÉCNICOS: Solo confirmación de asistencia
             await addDoc(collection(db, "alertas"), {
               tecnicoId,
               eventoId: eventoRef.id,
@@ -240,34 +227,25 @@ function useOperacionesEventos() {
               estado: "pendiente",
               createdAt: serverTimestamp(),
             });
-          }
-          console.log(`✅ ${evento.tecnicosIds.length} alertas de reunión creadas`);
-        } else {
-          // Actividades comunitarias
-          for (const tecnicoId of evento.tecnicosIds) {
+          } else {
+            // 🟠 ENCUENTROS: Los técnicos seleccionan comunidades en Planificación
             await addDoc(collection(db, "alertas"), {
               tecnicoId,
               eventoId: eventoRef.id,
               tipo: "actividad",
-              titulo: `Actividad: ${evento.titulo}`,
+              titulo: `Evento: ${evento.titulo}`,
               descripcion: evento.objetivo,
               fecha: evento.fecha,
               horario: evento.horario,
               lugar: evento.lugar,
-              comunidades: evento.comunidadesData?.map((c) => ({
-                id: c.comunidadId,
-                nombre: c.comunidadNombre,
-                seleccionada: false,
-                participantes: [],
-              })),
+              tipoEvento: evento.tipoEvento,
               estado: "pendiente",
               createdAt: serverTimestamp(),
             });
           }
-          console.log(
-            `✅ ${evento.tecnicosIds.length} alertas de actividad creadas`
-          );
         }
+
+        console.log(`✅ ${evento.tecnicosIds.length} alertas creadas`);
 
         // 3. Enviar notificaciones por email
         await enviarNotificacionesEmail(evento);
@@ -301,7 +279,7 @@ async function enviarNotificacionesEmail(evento: EventoGlobal) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         evento,
-        tipo: evento.tipoEvento === "tecnicos" ? "reunion" : "actividad",
+        tipo: evento.tipoEvento === "tecnicos" ? "reunion" : "evento",
       }),
     });
 
@@ -348,7 +326,7 @@ function Input({
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className={`w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent transition ${
+        className={`w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent transition ${
           error ? "border-red-500" : "border-gray-300"
         }`}
       />
@@ -384,7 +362,7 @@ function Select({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className={`w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent transition ${
+        className={`w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent transition ${
           error ? "border-red-500" : "border-gray-300"
         }`}
       >
@@ -407,6 +385,7 @@ interface TextareaProps {
   value: string;
   onChange: (value: string) => void;
   error?: string;
+  required?: boolean;
 }
 
 function Textarea({
@@ -415,16 +394,20 @@ function Textarea({
   value,
   onChange,
   error,
+  required = false,
 }: TextareaProps) {
   return (
     <div className="space-y-1">
-      <label className="block text-sm font-medium text-gray-700">{label}</label>
+      <label className="block text-sm font-medium text-gray-700">
+        {label}
+        {required && <span className="text-red-500 ml-1">*</span>}
+      </label>
       <textarea
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         rows={3}
-        className={`w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent transition resize-none ${
+        className={`w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent transition resize-none ${
           error ? "border-red-500" : "border-gray-300"
         }`}
       />
@@ -475,7 +458,7 @@ function SelectorTecnicos({
     <div className="bg-white p-6 rounded-lg shadow-md space-y-4">
       <div>
         <h3 className="text-lg font-semibold text-gray-900 mb-4">
-          👨‍💼 Técnicos Involucrados
+          👨‍💼 Técnicos Participantes
         </h3>
         <p className="text-sm text-gray-600 mb-4">
           Selecciona los técnicos que participarán en este evento
@@ -487,13 +470,13 @@ function SelectorTecnicos({
         placeholder="Buscar técnico..."
         value={busqueda}
         onChange={(e) => setBusqueda(e.target.value)}
-        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
       />
 
       <div className="flex gap-2">
         <button
           onClick={handleSeleccionarTodos}
-          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md transition"
+          className="flex-1 bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-md transition"
         >
           ✓ Seleccionar todos
         </button>
@@ -520,7 +503,7 @@ function SelectorTecnicos({
                 type="checkbox"
                 checked={seleccionados.includes(tecnico.id)}
                 onChange={() => handleToggle(tecnico.id)}
-                className="w-4 h-4 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                className="w-4 h-4 text-green-600 rounded focus:ring-2 focus:ring-green-500"
               />
               <span className="ml-3 font-medium text-gray-900">
                 {tecnico.nombre}
@@ -540,227 +523,29 @@ function SelectorTecnicos({
   );
 }
 
-// ============ COMPONENTE: Selección de comunidades y participantes ============
-interface SelectorComunidadesProps {
-  comunidades: Comunidad[];
-  participantes: Participante[];
-  selectedComunidades: EventoGlobal["comunidadesData"];
-  onComunidadesChange: (data: EventoGlobal["comunidadesData"]) => void;
+// ============ COMPONENTE: Info según tipo de evento ============
+interface InfoEventoProps {
   tipoEvento: string;
 }
 
-function SelectorComunidades({
-  comunidades,
-  participantes,
-  selectedComunidades,
-  onComunidadesChange,
-  tipoEvento,
-}: SelectorComunidadesProps) {
-  const [busqueda, setBusqueda] = useState("");
-  const [expandidas, setExpandidas] = useState<string[]>([]);
-
-  const comunidadesFiltradas = useMemo(
-    () =>
-      comunidades.filter((c) =>
-        c.nombre.toLowerCase().includes(busqueda.toLowerCase())
-      ),
-    [comunidades, busqueda]
-  );
-
-  const handleToggleComunidad = (comunidadId: string, comunidadNombre: string) => {
-    const existe = selectedComunidades.find((c) => c.comunidadId === comunidadId);
-
-    if (existe) {
-      onComunidadesChange(
-        selectedComunidades.filter((c) => c.comunidadId !== comunidadId)
-      );
-    } else {
-      onComunidadesChange([
-        ...selectedComunidades,
-        {
-          comunidadId,
-          comunidadNombre,
-          participantesIds: [],
-          todosTodos: false,
-        },
-      ]);
-      setExpandidas([...expandidas, comunidadId]);
-    }
+function InfoEvento({ tipoEvento }: InfoEventoProps) {
+  const mensajes = {
+    tecnicos:
+      "📌 Reunión de técnicos: Los técnicos recibirán una alerta para confirmar asistencia",
+    clubes:
+      "📌 Encuentro de Clubes: Los técnicos seleccionarán comunidades y participantes en Planificación",
+    promotores:
+      "📌 Encuentro de Promotores: Los técnicos seleccionarán comunidades y participantes en Planificación",
+    liderazgo:
+      "📌 Escuela de Liderazgo: Los técnicos seleccionarán comunidades y participantes en Planificación",
   };
 
-  const handleToggleParticipante = (
-    comunidadId: string,
-    participanteId: string
-  ) => {
-    const nuevaData = selectedComunidades.map((c) => {
-      if (c.comunidadId === comunidadId) {
-        if (c.participantesIds.includes(participanteId)) {
-          return {
-            ...c,
-            participantesIds: c.participantesIds.filter(
-              (p) => p !== participanteId
-            ),
-            todosTodos: false,
-          };
-        } else {
-          return {
-            ...c,
-            participantesIds: [...c.participantesIds, participanteId],
-          };
-        }
-      }
-      return c;
-    });
-    onComunidadesChange(nuevaData);
-  };
-
-  const handleSeleccionarTodosParticipantes = (comunidadId: string) => {
-    const participantesComunidad = participantes.filter(
-      (p) => p.comunidadId === comunidadId
-    );
-
-    const nuevaData = selectedComunidades.map((c) => {
-      if (c.comunidadId === comunidadId) {
-        return {
-          ...c,
-          participantesIds: participantesComunidad.map((p) => p.id),
-          todosTodos: true,
-        };
-      }
-      return c;
-    });
-    onComunidadesChange(nuevaData);
-  };
-
-  // No mostrar si es reunión de técnicos
-  if (tipoEvento === "tecnicos") {
-    return null;
-  }
+  if (!tipoEvento) return null;
 
   return (
-    <div className="bg-white p-6 rounded-lg shadow-md space-y-4">
-      <div>
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">
-          🏘️ Comunidades y Participantes
-        </h3>
-        <p className="text-sm text-gray-600 mb-4">
-          Selecciona las comunidades que participarán y qué participantes de
-          cada una
-        </p>
-      </div>
-
-      <input
-        type="text"
-        placeholder="Buscar comunidad..."
-        value={busqueda}
-        onChange={(e) => setBusqueda(e.target.value)}
-        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-      />
-
-      <div className="space-y-2 border rounded-md divide-y max-h-96 overflow-y-auto">
-        {comunidadesFiltradas.length === 0 ? (
-          <p className="p-4 text-center text-gray-500">
-            No hay comunidades disponibles
-          </p>
-        ) : (
-          comunidadesFiltradas.map((comunidad) => {
-            const seleccionada = selectedComunidades.find(
-              (c) => c.comunidadId === comunidad.id
-            );
-            const participantesComunidad = participantes.filter(
-              (p) => p.comunidadId === comunidad.id
-            );
-
-            return (
-              <div key={comunidad.id} className="space-y-2">
-                {/* Header comunidad */}
-                <div className="p-3 hover:bg-gray-50">
-                  <label className="flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={!!seleccionada}
-                      onChange={() =>
-                        handleToggleComunidad(comunidad.id, comunidad.nombre)
-                      }
-                      className="w-4 h-4 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
-                    />
-                    <span className="ml-3 font-medium text-gray-900">
-                      {comunidad.nombre}
-                    </span>
-                    <span className="ml-auto text-xs text-gray-500">
-                      {participantesComunidad.length} participantes
-                    </span>
-                  </label>
-
-                  {seleccionada && participantesComunidad.length > 0 && (
-                    <button
-                      onClick={() =>
-                        setExpandidas(
-                          expandidas.includes(comunidad.id)
-                            ? expandidas.filter((c) => c !== comunidad.id)
-                            : [...expandidas, comunidad.id]
-                        )
-                      }
-                      className="mt-2 text-sm text-blue-600 hover:text-blue-700 font-medium"
-                    >
-                      {expandidas.includes(comunidad.id)
-                        ? "▼ Ocultar participantes"
-                        : "▶ Ver participantes"}
-                    </button>
-                  )}
-                </div>
-
-                {/* Participantes */}
-                {seleccionada &&
-                  expandidas.includes(comunidad.id) &&
-                  participantesComunidad.length > 0 && (
-                    <div className="bg-gray-50 p-3 space-y-2 ml-6">
-                      <button
-                        onClick={() =>
-                          handleSeleccionarTodosParticipantes(comunidad.id)
-                        }
-                        className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded font-medium transition"
-                      >
-                        ✓ Todos los participantes
-                      </button>
-
-                      <div className="space-y-2">
-                        {participantesComunidad.map((participante) => (
-                          <label
-                            key={participante.id}
-                            className="flex items-center cursor-pointer p-2 hover:bg-white rounded"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={
-                                seleccionada.participantesIds.includes(
-                                  participante.id
-                                )
-                              }
-                              onChange={() =>
-                                handleToggleParticipante(
-                                  comunidad.id,
-                                  participante.id
-                                )
-                              }
-                              className="w-4 h-4 text-green-600 rounded focus:ring-2 focus:ring-green-500"
-                            />
-                            <span className="ml-2 text-sm text-gray-900">
-                              {participante.nombre}
-                            </span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-              </div>
-            );
-          })
-        )}
-      </div>
-
-      <p className="text-sm text-gray-600">
-        {selectedComunidades.length} comunidad(es) seleccionada(s)
+    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+      <p className="text-blue-800 font-medium">
+        {mensajes[tipoEvento as keyof typeof mensajes]}
       </p>
     </div>
   );
@@ -813,7 +598,7 @@ function Alert({ tipo, mensaje, onClose }: AlertProps) {
 
 // ============ COMPONENTE PRINCIPAL ============
 export default function EventosGlobalesPage() {
-  const { tecnicos, comunidades, participantes, loading, error: errorCarga } =
+  const { tecnicos, comunidades, loading, error: errorCarga } =
     useCargarDatos();
   const { crearEvento, procesando, error: errorOperacion, limpiarError } =
     useOperacionesEventos();
@@ -822,9 +607,6 @@ export default function EventosGlobalesPage() {
   const [tecnicosSeleccionados, setTecnicosSeleccionados] = useState<string[]>(
     []
   );
-  const [comunidadesSeleccionadas, setComunidadesSeleccionadas] = useState<
-    EventoGlobal["comunidadesData"]
-  >([]);
 
   const [alerta, setAlerta] = useState<{
     activa: boolean;
@@ -852,7 +634,6 @@ export default function EventosGlobalesPage() {
   const handleLimpiar = useCallback(() => {
     setForm(INITIAL_FORM);
     setTecnicosSeleccionados([]);
-    setComunidadesSeleccionadas([]);
     limpiarError();
   }, [limpiarError]);
 
@@ -875,18 +656,6 @@ export default function EventosGlobalesPage() {
       return;
     }
 
-    if (
-      form.tipoEvento !== "tecnicos" &&
-      comunidadesSeleccionadas.length === 0
-    ) {
-      setAlerta({
-        activa: true,
-        tipo: "warning",
-        mensaje: "Debe seleccionar al menos una comunidad",
-      });
-      return;
-    }
-
     const evento: EventoGlobal = {
       titulo: form.titulo.trim(),
       tipoEvento: form.tipoEvento,
@@ -896,10 +665,9 @@ export default function EventosGlobalesPage() {
       objetivo: form.objetivo.trim(),
       producto: form.producto.trim(),
       tecnicosIds: tecnicosSeleccionados,
-      comunidadesData: comunidadesSeleccionadas,
     };
 
-    const exito = await crearEvento(evento, "admin_user"); // TODO: Pasar userId del usuario actual
+    const exito = await crearEvento(evento, "admin_user");
 
     if (exito) {
       setAlerta({
@@ -919,13 +687,12 @@ export default function EventosGlobalesPage() {
     form,
     erroresValidacion,
     tecnicosSeleccionados,
-    comunidadesSeleccionadas,
     crearEvento,
     errorOperacion,
     handleLimpiar,
   ]);
 
-  // UI
+  // UI: Cargando
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -948,8 +715,8 @@ export default function EventosGlobalesPage() {
             📅 Eventos Globales
           </h1>
           <p className="text-gray-600 mt-1">
-            Crea eventos para todo el equipo y notifica automáticamente a
-            técnicos y comunidades
+            Crea eventos para todo el equipo técnico. Los técnicos confirmarán su
+            participación y seleccionarán comunidades/participantes en Planificación.
           </p>
         </div>
 
@@ -971,15 +738,7 @@ export default function EventosGlobalesPage() {
         )}
 
         {/* Info importante */}
-        {form.tipoEvento && (
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <p className="text-blue-800 font-medium">
-              {form.tipoEvento === "tecnicos"
-                ? "📌 Reunión de técnicos: Los técnicos recibirán una alerta para confirmar asistencia"
-                : "📌 Actividad comunitaria: Los técnicos seleccionarán comunidades y participantes"}
-            </p>
-          </div>
-        )}
+        <InfoEvento tipoEvento={form.tipoEvento} />
 
         {/* Formulario principal */}
         <div className="bg-white p-6 rounded-lg shadow-md space-y-4">
@@ -1048,6 +807,10 @@ export default function EventosGlobalesPage() {
             placeholder="¿Cuál es el propósito principal del evento?"
             value={form.objetivo}
             onChange={(value) => handleFormChange("objetivo", value)}
+            error={
+              erroresValidacion.find((e) => e.field === "objetivo")?.message
+            }
+            required
           />
 
           <Textarea
@@ -1063,15 +826,6 @@ export default function EventosGlobalesPage() {
           tecnicos={tecnicos}
           seleccionados={tecnicosSeleccionados}
           onSeleccionChange={setTecnicosSeleccionados}
-        />
-
-        {/* Selección de comunidades */}
-        <SelectorComunidades
-          comunidades={comunidades}
-          participantes={participantes}
-          selectedComunidades={comunidadesSeleccionadas}
-          onComunidadesChange={setComunidadesSeleccionadas}
-          tipoEvento={form.tipoEvento}
         />
 
         {/* Botón de creación */}
@@ -1094,25 +848,20 @@ export default function EventosGlobalesPage() {
         </div>
 
         {/* Resumen */}
-        {(tecnicosSeleccionados.length > 0 ||
-          comunidadesSeleccionadas.length > 0) && (
+        {tecnicosSeleccionados.length > 0 && (
           <div className="bg-gray-100 p-4 rounded-lg">
             <h3 className="font-bold text-gray-900 mb-2">📊 Resumen</h3>
             <ul className="space-y-1 text-sm text-gray-700">
               <li>✓ Técnicos a notificar: {tecnicosSeleccionados.length}</li>
-              {comunidadesSeleccionadas.length > 0 && (
-                <li>
-                  ✓ Comunidades participantes:{" "}
-                  {comunidadesSeleccionadas.length}
-                </li>
-              )}
-              {comunidadesSeleccionadas.length > 0 && (
-                <li>
-                  ✓ Participantes seleccionados:{" "}
-                  {comunidadesSeleccionadas.reduce(
-                    (acc, c) => acc + c.participantesIds.length,
-                    0
-                  )}
+              <li>
+                ✓ Tipo de evento:{" "}
+                {TIPOS_EVENTO.find((t) => t.value === form.tipoEvento)?.label ||
+                  "Seleccione tipo"}
+              </li>
+              {form.tipoEvento !== "tecnicos" && (
+                <li className="text-blue-700 italic">
+                  ℹ️ Los técnicos seleccionarán comunidades y participantes en
+                  Planificación
                 </li>
               )}
             </ul>

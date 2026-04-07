@@ -12,6 +12,7 @@ import {
   getDoc,
 } from "firebase/firestore";
 import { getComunidadesByTecnico } from "@/lib/getComunidadesByTecnico";
+import { getSemanaActiva } from "@/lib/getSemanaActiva";
 import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
@@ -43,6 +44,42 @@ interface AsistenciaParticipante {
   asistencias: {
     [fecha: string]: boolean;
   };
+}
+
+interface Semana {
+  id: string;
+  fechaInicio: string;
+  fechaFin: string;
+}
+
+interface ActividadPlanificada {
+  comunidadId: string;
+  comunidadNombre: string;
+  componente: string;
+  actividad: string;
+  dia: string;
+  fecha: string;
+  horario: string;
+  objetivoEspecifico: string;
+  productoEsperado: string;
+}
+
+interface EventoGlobal {
+  id: string;
+  titulo: string;
+  fecha: string;
+  horario: string;
+  lugar: string;
+  objetivo: string;
+  tipoEvento: string;
+  estado?: string;
+  confirmado?: boolean;
+  createdAt?: any;
+}
+
+interface EventoConfirmado extends EventoGlobal {
+  confirmado: boolean;
+  tipoRespuesta: "reunion" | "encuentro";
 }
 
 // ============ HOOK: Cargar comunidades ============
@@ -136,24 +173,24 @@ function useDatosAsistencia(userId: string | undefined, comunidadId: string) {
       for (const docSeg of segSnap.docs) {
         const data = docSeg.data();
 
-        if (!data.registros) continue;
+        if (!data.actividadesRegulares) continue;
 
-        for (const registro of data.registros) {
-          // Solo procesar registros de esta comunidad que fueron realizados
+        for (const actividad of data.actividadesRegulares) {
+          // Solo procesar actividades de esta comunidad que fueron realizadas
           if (
-            registro.comunidadId === comunidadId &&
-            registro.estadoActividad === "realizada" &&
-            registro.fecha
+            actividad.comunidadId === comunidadId &&
+            actividad.estadoActividad === "realizada" &&
+            actividad.fecha
           ) {
-            fechasSet.add(registro.fecha);
+            fechasSet.add(actividad.fecha);
 
-            const asistentesIds = registro.asistentesIds || [];
+            const asistentesIds = actividad.asistentesIds || [];
 
             // Marcar asistencia para los que asistieron
             asistentesIds.forEach((id: string) => {
               if (asistenciasMap.has(id)) {
                 const asistencias = asistenciasMap.get(id) || {};
-                asistencias[registro.fecha] = true;
+                asistencias[actividad.fecha] = true;
                 asistenciasMap.set(id, asistencias);
               }
             });
@@ -162,8 +199,8 @@ function useDatosAsistencia(userId: string | undefined, comunidadId: string) {
             participantesMap.forEach((p) => {
               if (!asistentesIds.includes(p.id)) {
                 const asistencias = asistenciasMap.get(p.id) || {};
-                if (!(registro.fecha in asistencias)) {
-                  asistencias[registro.fecha] = false;
+                if (!(actividad.fecha in asistencias)) {
+                  asistencias[actividad.fecha] = false;
                 }
                 asistenciasMap.set(p.id, asistencias);
               }
@@ -200,6 +237,151 @@ function useDatosAsistencia(userId: string | undefined, comunidadId: string) {
   return { participantes, fechas, loading, error, recargar: cargar };
 }
 
+// ============ HOOK: Cargar agenda semanal ============
+function useCargaAgendaSemanal(userId: string | undefined) {
+  const [actividades, setActividades] = useState<ActividadPlanificada[]>([]);
+  const [semanaActiva, setSemanaActiva] = useState<Semana | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    cargar();
+  }, [userId]);
+
+  const cargar = useCallback(async () => {
+    if (!userId) return;
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      // 1. Obtener semana activa
+      const semana = await getSemanaActiva();
+      if (!semana) {
+        setError("No hay semana activa");
+        return;
+      }
+      setSemanaActiva(semana);
+
+      // 2. Obtener planificación enviada
+      const planQuery = query(
+        collection(db, "planificaciones"),
+        where("semanaId", "==", semana.id),
+        where("tecnicoId", "==", userId),
+        where("estado", "==", "enviado")
+      );
+
+      const planSnap = await getDocs(planQuery);
+
+      if (!planSnap.empty) {
+        const planData = planSnap.docs[0].data();
+        const actividadesOrdenadas = (planData.actividades || []).sort(
+          (a: any, b: any) => {
+            const fechaA = new Date(a.fecha).getTime();
+            const fechaB = new Date(b.fecha).getTime();
+            return fechaA - fechaB;
+          }
+        );
+        setActividades(actividadesOrdenadas);
+      } else {
+        setActividades([]);
+      }
+    } catch (err) {
+      const mensaje = err instanceof Error ? err.message : "Error al cargar";
+      setError(mensaje);
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }, [userId]);
+
+  return { actividades, semanaActiva, loading, error, recargar: cargar };
+}
+
+// ============ HOOK: Cargar eventos globales ============
+function useCargaEventosGlobales(userId: string | undefined) {
+  const [eventosConfirmados, setEventosConfirmados] = useState<EventoConfirmado[]>([]);
+  const [eventosHistorico, setEventosHistorico] = useState<EventoConfirmado[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    cargar();
+  }, [userId]);
+
+  const cargar = useCallback(async () => {
+    if (!userId) return;
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      // 1. Obtener respuestas del técnico
+      const respuestasQuery = query(
+        collection(db, "respuestasEventos"),
+        where("tecnicoId", "==", userId)
+      );
+
+      const respuestasSnap = await getDocs(respuestasQuery);
+      const respuestasData = respuestasSnap.docs.map((d) => d.data());
+
+      // 2. Obtener todos los eventos globales
+      const eventosSnap = await getDocs(collection(db, "eventosGlobales"));
+      const todosEventos = eventosSnap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+      } as EventoGlobal));
+
+      // 3. Mapear eventos confirmados
+      const hoy = new Date();
+      hoy.setHours(0, 0, 0, 0);
+
+      const eventosConfirm: EventoConfirmado[] = [];
+      const eventosHist: EventoConfirmado[] = [];
+
+      for (const evento of todosEventos) {
+        const respuesta = respuestasData.find((r) => r.eventoId === evento.id);
+
+        if (respuesta) {
+          const fechaEvento = new Date(evento.fecha);
+          fechaEvento.setHours(0, 0, 0, 0);
+
+          const eventoConfirmado: EventoConfirmado = {
+            ...evento,
+            confirmado: respuesta.confirmado || respuesta.tipoRespuesta !== undefined,
+            tipoRespuesta: respuesta.tipoRespuesta || "reunion",
+          };
+
+          if (fechaEvento >= hoy) {
+            eventosConfirm.push(eventoConfirmado);
+          } else {
+            eventosHist.push(eventoConfirmado);
+          }
+        }
+      }
+
+      // Ordenar por fecha
+      eventosConfirm.sort(
+        (a, b) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime()
+      );
+      eventosHist.sort(
+        (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
+      );
+
+      setEventosConfirmados(eventosConfirm);
+      setEventosHistorico(eventosHist);
+    } catch (err) {
+      const mensaje = err instanceof Error ? err.message : "Error al cargar";
+      setError(mensaje);
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }, [userId]);
+
+  return { eventosConfirmados, eventosHistorico, loading, error, recargar: cargar };
+}
+
 // ============ COMPONENTE: Card de Comunidad ============
 interface CardComunidadProps {
   comunidad: Comunidad;
@@ -224,7 +406,11 @@ function CardComunidad({
       }`}
     >
       <h3 className="text-lg font-bold">{comunidad.nombre}</h3>
-      <p className={`text-sm ${seleccionada ? "text-green-100" : "text-gray-600"}`}>
+      <p
+        className={`text-sm ${
+          seleccionada ? "text-green-100" : "text-gray-600"
+        }`}
+      >
         👥 {numeroPar} participantes
       </p>
     </button>
@@ -254,7 +440,8 @@ function TablaAsistencia({
   };
 
   const estadisticas = useMemo(() => {
-    const porFecha: { [fecha: string]: { presentes: number; total: number } } = {};
+    const porFecha: { [fecha: string]: { presentes: number; total: number } } =
+      {};
     const porGenero: { M: number; F: number; O: number } = { M: 0, F: 0, O: 0 };
 
     fechas.forEach((fecha) => {
@@ -293,28 +480,41 @@ function TablaAsistencia({
       {/* Estadísticas */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
         <div className="bg-blue-100 rounded-lg p-4 text-center">
-          <p className="text-gray-700 text-sm font-semibold">Total Participantes</p>
-          <p className="text-2xl font-bold text-blue-800">{participantes.length}</p>
+          <p className="text-gray-700 text-sm font-semibold">
+            Total Participantes
+          </p>
+          <p className="text-2xl font-bold text-blue-800">
+            {participantes.length}
+          </p>
         </div>
         <div className="bg-blue-100 rounded-lg p-4 text-center">
           <p className="text-gray-700 text-sm font-semibold">👨 Masculino</p>
-          <p className="text-2xl font-bold text-blue-800">{estadisticas.porGenero.M}</p>
+          <p className="text-2xl font-bold text-blue-800">
+            {estadisticas.porGenero.M}
+          </p>
         </div>
         <div className="bg-pink-100 rounded-lg p-4 text-center">
           <p className="text-gray-700 text-sm font-semibold">👩 Femenino</p>
-          <p className="text-2xl font-bold text-pink-800">{estadisticas.porGenero.F}</p>
+          <p className="text-2xl font-bold text-pink-800">
+            {estadisticas.porGenero.F}
+          </p>
         </div>
         <div className="bg-purple-100 rounded-lg p-4 text-center">
-          <p className="text-gray-700 text-sm font-semibold">Semanas Visitadas</p>
+          <p className="text-gray-700 text-sm font-semibold">
+            Semanas Visitadas
+          </p>
           <p className="text-2xl font-bold text-purple-800">{fechas.length}</p>
         </div>
         <div className="bg-green-100 rounded-lg p-4 text-center">
-          <p className="text-gray-700 text-sm font-semibold">Asistencia Promedio</p>
+          <p className="text-gray-700 text-sm font-semibold">
+            Asistencia Promedio
+          </p>
           <p className="text-2xl font-bold text-green-800">
             {fechas.length > 0
               ? Math.round(
                   (Object.values(estadisticas.porFecha).reduce(
-                    (sum, f) => sum + (f.total > 0 ? (f.presentes / f.total) * 100 : 0),
+                    (sum, f) =>
+                      sum + (f.total > 0 ? (f.presentes / f.total) * 100 : 0),
                     0
                   ) /
                     fechas.length) *
@@ -377,7 +577,9 @@ function TablaAsistencia({
 
           <tbody>
             {participantes.map((p, index) => {
-              const { presentes, total } = calcularAsistencias(p.asistencias);
+              const { presentes, total } = calcularAsistencias(
+                p.asistencias
+              );
 
               return (
                 <tr key={p.participanteId} className="hover:bg-gray-50 transition">
@@ -434,13 +636,17 @@ function TablaAsistencia({
 
             {/* Fila de totales */}
             <tr className="bg-gray-100 font-bold">
-              <td colSpan={5} className="border border-gray-300 px-4 py-3 text-right">
+              <td
+                colSpan={5}
+                className="border border-gray-300 px-4 py-3 text-right"
+              >
                 TOTAL ASISTENTES
               </td>
 
               {fechas.map((fecha) => {
                 const { presentes, total } = estadisticas.porFecha[fecha];
-                const porcentaje = total > 0 ? Math.round((presentes / total) * 100) : 0;
+                const porcentaje =
+                  total > 0 ? Math.round((presentes / total) * 100) : 0;
 
                 return (
                   <td
@@ -453,7 +659,9 @@ function TablaAsistencia({
                 );
               })}
 
-              <td className="border border-gray-300 px-4 py-3 text-center">—</td>
+              <td className="border border-gray-300 px-4 py-3 text-center">
+                —
+              </td>
             </tr>
           </tbody>
         </table>
@@ -462,12 +670,315 @@ function TablaAsistencia({
   );
 }
 
+// ============ COMPONENTE: Agenda Semanal ============
+interface AgendaSemanalProps {
+  actividades: ActividadPlanificada[];
+  semanaActiva: Semana | null;
+}
+
+function AgendaSemanal({ actividades, semanaActiva }: AgendaSemanalProps) {
+  const formatearFecha = (fecha: string) => {
+    const date = new Date(fecha + "T00:00:00");
+    return date.toLocaleDateString("es-ES", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+    });
+  };
+
+  if (!semanaActiva) {
+    return (
+      <div className="bg-white rounded-lg shadow-md p-8 text-center">
+        <p className="text-gray-500 text-lg">No hay semana activa</p>
+      </div>
+    );
+  }
+
+  if (actividades.length === 0) {
+    return (
+      <div className="bg-white rounded-lg shadow-md p-8 text-center">
+        <p className="text-gray-500 text-lg">No hay actividades planificadas</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4">
+        {actividades.map((actividad, idx) => (
+          <div
+            key={idx}
+            className="bg-white rounded-lg shadow-md p-5 border-l-4 border-blue-500 hover:shadow-lg transition"
+          >
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Lado izquierdo */}
+              <div className="space-y-2">
+                <div>
+                  <p className="text-xs text-gray-500 uppercase font-semibold">
+                    Comunidad
+                  </p>
+                  <p className="text-lg font-bold text-gray-900">
+                    📍 {actividad.comunidadNombre}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs text-gray-500 uppercase font-semibold">
+                    Fecha y Hora
+                  </p>
+                  <p className="text-sm text-gray-700">
+                    📅 {formatearFecha(actividad.fecha)}
+                  </p>
+                  <p className="text-sm text-gray-700">
+                    🕐 {actividad.horario}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs text-gray-500 uppercase font-semibold">
+                    Componente
+                  </p>
+                  <p className="text-sm font-medium text-gray-900">
+                    {actividad.componente}
+                  </p>
+                </div>
+              </div>
+
+              {/* Lado derecho */}
+              <div className="space-y-2">
+                <div>
+                  <p className="text-xs text-gray-500 uppercase font-semibold">
+                    Actividad
+                  </p>
+                  <p className="text-sm text-gray-800">
+                    {actividad.actividad}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs text-gray-500 uppercase font-semibold">
+                    Objetivo Específico
+                  </p>
+                  <p className="text-sm text-gray-800">
+                    {actividad.objetivoEspecifico}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs text-gray-500 uppercase font-semibold">
+                    Producto Esperado
+                  </p>
+                  <p className="text-sm text-gray-800">
+                    {actividad.productoEsperado}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============ COMPONENTE: Eventos Globales ============
+interface EventosGlobalesProps {
+  eventosConfirmados: EventoConfirmado[];
+  eventosHistorico: EventoConfirmado[];
+}
+
+function EventosGlobales({
+  eventosConfirmados,
+  eventosHistorico,
+}: EventosGlobalesProps) {
+  const [mostrarHistorico, setMostrarHistorico] = useState(false);
+
+  const formatearFecha = (fecha: string) => {
+    const date = new Date(fecha + "T00:00:00");
+    return date.toLocaleDateString("es-ES", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+  };
+
+  const getTipoColor = (tipo: string) => {
+    switch (tipo) {
+      case "tecnicos":
+        return "bg-yellow-100 text-yellow-800 border-yellow-300";
+      case "clubes":
+      case "promotores":
+      case "liderazgo":
+        return "bg-orange-100 text-orange-800 border-orange-300";
+      default:
+        return "bg-gray-100 text-gray-800 border-gray-300";
+    }
+  };
+
+  const getTipoIcono = (tipo: string) => {
+    switch (tipo) {
+      case "tecnicos":
+        return "📋";
+      case "clubes":
+      case "promotores":
+      case "liderazgo":
+        return "📅";
+      default:
+        return "📌";
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Eventos Confirmados (Próximos) */}
+      <div>
+        <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
+          📅 Eventos Próximos ({eventosConfirmados.length})
+        </h3>
+
+        {eventosConfirmados.length === 0 ? (
+          <div className="bg-white rounded-lg shadow-md p-6 text-center text-gray-500">
+            <p>No hay eventos próximos confirmados</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4">
+            {eventosConfirmados.map((evento) => (
+              <div
+                key={evento.id}
+                className="bg-white rounded-lg shadow-md p-4 border-l-4 border-blue-500 hover:shadow-lg transition"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2">
+                      <span className="text-2xl">
+                        {getTipoIcono(evento.tipoEvento)}
+                      </span>
+                      <h4 className="text-lg font-bold text-gray-900">
+                        {evento.titulo}
+                      </h4>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-700">
+                      <div>
+                        <p className="font-semibold">📅 Fecha:</p>
+                        <p>{formatearFecha(evento.fecha)}</p>
+                      </div>
+                      <div>
+                        <p className="font-semibold">🕐 Horario:</p>
+                        <p>{evento.horario}</p>
+                      </div>
+                      <div>
+                        <p className="font-semibold">📍 Lugar:</p>
+                        <p>{evento.lugar}</p>
+                      </div>
+                      <div>
+                        <p className="font-semibold">🎯 Objetivo:</p>
+                        <p>{evento.objetivo}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <span
+                    className={`px-3 py-1 rounded-full text-sm font-semibold border whitespace-nowrap ${getTipoColor(
+                      evento.tipoEvento
+                    )}`}
+                  >
+                    {evento.tipoEvento === "tecnicos"
+                      ? "Reunión"
+                      : "Encuentro"}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Eventos Históricos */}
+      <div>
+        <button
+          onClick={() => setMostrarHistorico(!mostrarHistorico)}
+          className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2 hover:text-blue-600 transition"
+        >
+          {mostrarHistorico ? "▼" : "▶"} 📊 Eventos Pasados ({eventosHistorico.length})
+        </button>
+
+        {mostrarHistorico && (
+          <div className="grid grid-cols-1 gap-4">
+            {eventosHistorico.length === 0 ? (
+              <div className="bg-white rounded-lg shadow-md p-6 text-center text-gray-500">
+                <p>No hay eventos pasados</p>
+              </div>
+            ) : (
+              eventosHistorico.map((evento) => (
+                <div
+                  key={evento.id}
+                  className="bg-gray-50 rounded-lg shadow-md p-4 border-l-4 border-gray-400 opacity-75"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <span className="text-2xl">
+                          {getTipoIcono(evento.tipoEvento)}
+                        </span>
+                        <h4 className="text-lg font-bold text-gray-900">
+                          {evento.titulo}
+                        </h4>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-600">
+                        <div>
+                          <p className="font-semibold">📅 Fecha:</p>
+                          <p>{formatearFecha(evento.fecha)}</p>
+                        </div>
+                        <div>
+                          <p className="font-semibold">🕐 Horario:</p>
+                          <p>{evento.horario}</p>
+                        </div>
+                        <div>
+                          <p className="font-semibold">📍 Lugar:</p>
+                          <p>{evento.lugar}</p>
+                        </div>
+                        <div>
+                          <p className="font-semibold">🎯 Objetivo:</p>
+                          <p>{evento.objetivo}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <span
+                      className={`px-3 py-1 rounded-full text-sm font-semibold border whitespace-nowrap ${getTipoColor(
+                        evento.tipoEvento
+                      )}`}
+                    >
+                      {evento.tipoEvento === "tecnicos"
+                        ? "Reunión"
+                        : "Encuentro"}
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ============ COMPONENTE PRINCIPAL ============
-export default function ReportesPage() {
+export default function MisReportesPage() {
   const { user } = useAuth();
   const { comunidades, loading: loadingComunidades } = useCargarComunidades(
     user?.uid
   );
+  const { actividades, semanaActiva, loading: loadingAgenda } =
+    useCargaAgendaSemanal(user?.uid);
+  const {
+    eventosConfirmados,
+    eventosHistorico,
+    loading: loadingEventos,
+  } = useCargaEventosGlobales(user?.uid);
 
   const [comunidadSeleccionada, setComunidadSeleccionada] = useState("");
   const {
@@ -477,27 +988,6 @@ export default function ReportesPage() {
   } = useDatosAsistencia(user?.uid, comunidadSeleccionada);
 
   const [procesando, setProcesando] = useState(false);
-
-  // Contar participantes por comunidad
-  const participantesPorComunidad = useMemo(() => {
-    const map = new Map<string, number>();
-
-    if (comunidadSeleccionada) {
-      // Cargar conteo para la comunidad seleccionada
-      getDocs(
-        query(
-          collection(db, "participantes"),
-          where("comunidadId", "==", comunidadSeleccionada),
-          where("estado", "==", "activo")
-        )
-      ).then((snap) => {
-        map.set(comunidadSeleccionada, snap.size);
-      });
-    }
-
-    return map;
-  }, [comunidadSeleccionada]);
-
   const [conteoParticipantes, setConteoParticipantes] = useState<
     Map<string, number>
   >(new Map());
@@ -540,11 +1030,21 @@ export default function ReportesPage() {
           Nombres: p.nombres,
           Apellidos: p.apellidos,
           Edad: p.edad,
-          Género: p.genero === "M" ? "Masculino" : p.genero === "F" ? "Femenino" : "Otro",
+          Género:
+            p.genero === "M"
+              ? "Masculino"
+              : p.genero === "F"
+              ? "Femenino"
+              : "Otro",
         };
 
         fechas.forEach((fecha) => {
-          fila[fecha] = p.asistencias[fecha] === true ? 1 : p.asistencias[fecha] === false ? 0 : "";
+          fila[fecha] =
+            p.asistencias[fecha] === true
+              ? 1
+              : p.asistencias[fecha] === false
+              ? 0
+              : "";
         });
 
         const { presentes, total } = {
@@ -564,7 +1064,10 @@ export default function ReportesPage() {
         comunidadSeleccionada
       );
 
-      const buffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+      const buffer = XLSX.write(workbook, {
+        bookType: "xlsx",
+        type: "array",
+      });
       const file = new Blob([buffer], {
         type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       });
@@ -581,12 +1084,12 @@ export default function ReportesPage() {
     }
   };
 
-  if (loadingComunidades) {
+  if (loadingComunidades || loadingAgenda || loadingEventos) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center space-y-4">
           <div className="animate-spin text-4xl">⏳</div>
-          <p className="text-gray-600 font-medium">Cargando comunidades...</p>
+          <p className="text-gray-600 font-medium">Cargando reportes...</p>
         </div>
       </div>
     );
@@ -594,23 +1097,55 @@ export default function ReportesPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
+      <div className="max-w-7xl mx-auto space-y-8">
         {/* Encabezado */}
         <div>
           <h1 className="text-4xl font-bold text-gray-900">
-            📊 Reportes de Asistencia
+            📊 Mis Reportes
           </h1>
           <p className="text-gray-600 mt-1">
-            Visualiza la asistencia semanal por comunidad
+            Visualiza tu agenda semanal, eventos globales y asistencia por comunidad
           </p>
         </div>
 
-        {/* Comunidades */}
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-4">
-            🏘️ Comunidades
+        {/* SECCIÓN 1: AGENDA SEMANAL */}
+        <div className="space-y-4">
+          <h2 className="text-2xl font-bold text-gray-900">
+            📅 Agenda Semanal
+          </h2>
+          {loadingAgenda ? (
+            <div className="flex items-center justify-center p-8">
+              <p className="text-gray-600">Cargando agenda...</p>
+            </div>
+          ) : (
+            <AgendaSemanal actividades={actividades} semanaActiva={semanaActiva} />
+          )}
+        </div>
+
+        {/* SECCIÓN 2: EVENTOS GLOBALES */}
+        <div className="space-y-4">
+          <h2 className="text-2xl font-bold text-gray-900">
+            🌍 Eventos Globales
+          </h2>
+          {loadingEventos ? (
+            <div className="flex items-center justify-center p-8">
+              <p className="text-gray-600">Cargando eventos...</p>
+            </div>
+          ) : (
+            <EventosGlobales
+              eventosConfirmados={eventosConfirmados}
+              eventosHistorico={eventosHistorico}
+            />
+          )}
+        </div>
+
+        {/* SECCIÓN 3: ASISTENCIA POR COMUNIDAD */}
+        <div className="space-y-6">
+          <h2 className="text-2xl font-bold text-gray-900">
+            👥 Asistencia por Comunidad
           </h2>
 
+          {/* Comunidades */}
           {comunidades.length === 0 ? (
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
               <p className="text-yellow-800 font-medium">
@@ -630,44 +1165,46 @@ export default function ReportesPage() {
               ))}
             </div>
           )}
-        </div>
 
-        {/* Tabla de Asistencia */}
-        {comunidadSeleccionada && (
-          <div>
-            <h2 className="text-2xl font-bold text-gray-900 mb-4">
-              📋 Asistencia - {comunidades.find((c) => c.id === comunidadSeleccionada)?.nombre}
-            </h2>
+          {/* Tabla de Asistencia */}
+          {comunidadSeleccionada && (
+            <div>
+              <h3 className="text-xl font-bold text-gray-900 mb-4">
+                📋 Asistencia -{" "}
+                {comunidades.find((c) => c.id === comunidadSeleccionada)?.nombre}
+              </h3>
 
-            {loadingAsistencia ? (
-              <div className="flex items-center justify-center p-8">
-                <div className="text-center space-y-4">
-                  <div className="animate-spin text-3xl">⏳</div>
-                  <p className="text-gray-600">Cargando asistencia...</p>
+              {loadingAsistencia ? (
+                <div className="flex items-center justify-center p-8">
+                  <div className="text-center space-y-4">
+                    <div className="animate-spin text-3xl">⏳</div>
+                    <p className="text-gray-600">Cargando asistencia...</p>
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <TablaAsistencia
-                participantes={participantes}
-                fechas={fechas}
-                comunidadNombre={
-                  comunidades.find((c) => c.id === comunidadSeleccionada)?.nombre || ""
-                }
-                onExportar={handleExportarExcel}
-                procesando={procesando}
-              />
-            )}
-          </div>
-        )}
+              ) : (
+                <TablaAsistencia
+                  participantes={participantes}
+                  fechas={fechas}
+                  comunidadNombre={
+                    comunidades.find((c) => c.id === comunidadSeleccionada)
+                      ?.nombre || ""
+                  }
+                  onExportar={handleExportarExcel}
+                  procesando={procesando}
+                />
+              )}
+            </div>
+          )}
 
-        {/* Mensaje cuando no hay comunidad seleccionada */}
-        {!comunidadSeleccionada && (
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-8 text-center">
-            <p className="text-blue-800 text-lg font-medium">
-              👆 Selecciona una comunidad para ver la asistencia semanal
-            </p>
-          </div>
-        )}
+          {/* Mensaje cuando no hay comunidad seleccionada */}
+          {!comunidadSeleccionada && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-8 text-center">
+              <p className="text-blue-800 text-lg font-medium">
+                👆 Selecciona una comunidad para ver la asistencia semanal
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
