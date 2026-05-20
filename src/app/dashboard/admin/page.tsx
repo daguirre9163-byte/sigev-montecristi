@@ -1,4 +1,3 @@
-// force rebuild vercelgit add .
 "use client";
 
 import { useEffect, useState } from "react";
@@ -8,12 +7,7 @@ import { saveAs } from "file-saver";
 import "leaflet/dist/leaflet.css";
 
 import { db } from "@/lib/firebase";
-import {
-  collection,
-  getDocs,
-  query,
-  where,
-} from "firebase/firestore";
+import { collection, getDocs } from "firebase/firestore";
 
 import {
   BarChart,
@@ -39,9 +33,6 @@ import {
 import {
   Users,
   MapPin,
-  ClipboardList,
-  CheckCircle,
-  TrendingUp,
   Activity,
 } from "lucide-react";
 
@@ -149,6 +140,7 @@ export default function DashboardAdminPowerBI() {
   const [chartCumplimiento, setChartCumplimiento] = useState<any[]>([]);
   const [chartParticipantes, setChartParticipantes] = useState<any[]>([]);
   const [chartPie, setChartPie] = useState<any[]>([]);
+  const [chartGenero, setChartGenero] = useState<any[]>([]);
   const [chartSemanal, setChartSemanal] = useState<any[]>([]);
   const [chartRadar, setChartRadar] = useState<any[]>([]);
   const [chartTendencia, setChartTendencia] = useState<any[]>([]);
@@ -302,7 +294,7 @@ export default function DashboardAdminPowerBI() {
           ).length,
         }))
         .sort((a, b) => b.participantes - a.participantes)
-        .slice(0, 10) // Top 10
+        .slice(0, 10)
     );
 
     // -------------------------
@@ -317,6 +309,45 @@ export default function DashboardAdminPowerBI() {
         ).length,
       }))
     );
+
+    // -------------------------
+    // PARTICIPANTES POR GÉNERO
+    // -------------------------
+
+    const generoData = participantesSnap.docs.reduce(
+      (acc, doc) => {
+        const data = doc.data() as any;
+        const genero = (data.genero || "No especificado")
+          .toString()
+          .trim()
+          .toLowerCase();
+
+        if (
+          genero === "masculino" ||
+          genero === "hombre" ||
+          genero === "m"
+        ) {
+          acc.masculino++;
+        } else if (
+          genero === "femenino" ||
+          genero === "mujer" ||
+          genero === "f"
+        ) {
+          acc.femenino++;
+        } else {
+          acc.otro++;
+        }
+
+        return acc;
+      },
+      { masculino: 0, femenino: 0, otro: 0 }
+    );
+
+    setChartGenero([
+      { name: "Masculino", value: generoData.masculino },
+      { name: "Femenino", value: generoData.femenino },
+      { name: "Otro / No especificado", value: generoData.otro },
+    ]);
 
     // -------------------------
     // RADAR DESEMPEÑO
@@ -349,11 +380,11 @@ export default function DashboardAdminPowerBI() {
               (p) => (p.data() as any).semanaId === id
             ).length,
             seguimientos: seguimientosSnap.docs.filter(
-              (s) => (s.data() as any).semanaId === id
+              (seg) => (seg.data() as any).semanaId === id
             ).length,
           };
         })
-        .slice(-8) // Últimas 8 semanas
+        .slice(-8)
     );
 
     // -------------------------
@@ -381,7 +412,7 @@ export default function DashboardAdminPowerBI() {
             asistentes: totalAsistentes,
           };
         })
-        .slice(-8) // Últimas 8 semanas
+        .slice(-8)
     );
 
     setLoading(false);
@@ -400,8 +431,8 @@ export default function DashboardAdminPowerBI() {
         Tecnico: t.nombre,
         Email: t.email,
         Comunidades: cumpl?.comunidades || 0,
-        Participantes: chartPie.find((p) => p.name === (t.nombre || t.email))
-          ?.value || 0,
+        Participantes:
+          chartPie.find((p) => p.name === (t.nombre || t.email))?.value || 0,
         Planificaciones: cumpl?.planes || 0,
         Seguimientos: cumpl?.seguimientos || 0,
         Cumplimiento: `${cumpl?.cumplimiento || 0}%`,
@@ -518,7 +549,6 @@ export default function DashboardAdminPowerBI() {
 
               return (
                 <div key={comunidad.id}>
-                  {/* Círculo de cobertura */}
                   <Circle
                     center={[comunidad.lat, comunidad.lng]}
                     radius={800}
@@ -531,7 +561,6 @@ export default function DashboardAdminPowerBI() {
                     }}
                   />
 
-                  {/* Marcador */}
                   <Marker position={[comunidad.lat, comunidad.lng]} icon={icono}>
                     <Popup>
                       <div className="space-y-2 text-sm">
@@ -547,15 +576,16 @@ export default function DashboardAdminPowerBI() {
                         </div>
                         <div>
                           <p className="text-gray-600">
-                            Técnico: <span className="font-semibold">{comunidad.tecnico}</span>
+                            Técnico:{" "}
+                            <span className="font-semibold">
+                              {comunidad.tecnico}
+                            </span>
                           </p>
                         </div>
                         <div>
                           <span
                             className={`px-2 py-1 rounded text-xs font-bold text-white ${
-                              comunidad.activa
-                                ? "bg-green-600"
-                                : "bg-red-600"
+                              comunidad.activa ? "bg-green-600" : "bg-red-600"
                             }`}
                           >
                             {comunidad.activa ? "✅ Activa" : "⛔ Inactiva"}
@@ -574,176 +604,166 @@ export default function DashboardAdminPowerBI() {
       {/* GRÁFICOS PRINCIPALES */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Chart title="📊 Cumplimiento por Técnico" height={350}>
-          <ResponsiveContainer width="100%" height={350}>
-            <BarChart data={chartCumplimiento}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis
-                dataKey="nombre"
-                tick={{ fontSize: 12 }}
-                angle={-45}
-                textAnchor="end"
-                height={100}
-              />
-              <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#1f2937",
-                  border: "none",
-                  borderRadius: "8px",
-                  color: "#fff",
-                }}
-              />
-              <Legend />
-              <Bar
-                dataKey="cumplimiento"
-                fill="#10b981"
-                name="Cumplimiento %"
-                radius={[8, 8, 0, 0]}
-              />
-            </BarChart>
-          </ResponsiveContainer>
+          <BarChart data={chartCumplimiento}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis
+              dataKey="nombre"
+              tick={{ fontSize: 12 }}
+              angle={-45}
+              textAnchor="end"
+              height={100}
+            />
+            <YAxis tick={{ fontSize: 12 }} />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: "#1f2937",
+                border: "none",
+                borderRadius: "8px",
+                color: "#fff",
+              }}
+            />
+            <Legend />
+            <Bar
+              dataKey="cumplimiento"
+              fill="#10b981"
+              name="Cumplimiento %"
+              radius={[8, 8, 0, 0]}
+            />
+          </BarChart>
         </Chart>
 
         <Chart title="👥 Top 10 Comunidades por Participantes" height={350}>
-          <ResponsiveContainer width="100%" height={350}>
-            <BarChart data={chartParticipantes} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis type="number" tick={{ fontSize: 12 }} />
-              <YAxis dataKey="nombre" type="category" width={120} tick={{ fontSize: 11 }} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#1f2937",
-                  border: "none",
-                  borderRadius: "8px",
-                  color: "#fff",
-                }}
-              />
-              <Bar
-                dataKey="participantes"
-                fill="#3b82f6"
-                radius={[0, 8, 8, 0]}
-              />
-            </BarChart>
-          </ResponsiveContainer>
+          <BarChart data={chartParticipantes} layout="vertical">
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis type="number" tick={{ fontSize: 12 }} />
+            <YAxis
+              dataKey="nombre"
+              type="category"
+              width={120}
+              tick={{ fontSize: 11 }}
+            />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: "#1f2937",
+                border: "none",
+                borderRadius: "8px",
+                color: "#fff",
+              }}
+            />
+            <Bar
+              dataKey="participantes"
+              fill="#3b82f6"
+              radius={[0, 8, 8, 0]}
+            />
+          </BarChart>
         </Chart>
 
         <Chart title="🥧 Distribución de Participantes por Técnico" height={350}>
-          <ResponsiveContainer width="100%" height={350}>
-            <PieChart>
-              <Pie
-                data={chartPie}
-                dataKey="value"
-                label={({ name, value }) => `${name}: ${value}`}
-                cx="50%"
-                cy="50%"
-              >
-                {chartPie.map((_, i) => (
-                  <Cell key={`cell-${i}`} fill={COLORS[i % COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#1f2937",
-                  border: "none",
-                  borderRadius: "8px",
-                  color: "#fff",
-                }}
-              />
-            </PieChart>
-          </ResponsiveContainer>
+          <PieChart>
+            <Pie
+              data={chartPie}
+              dataKey="value"
+              label={({ name, value }) => `${name}: ${value}`}
+              cx="50%"
+              cy="50%"
+            >
+              {chartPie.map((_, i) => (
+                <Cell key={`cell-${i}`} fill={COLORS[i % COLORS.length]} />
+              ))}
+            </Pie>
+            <Tooltip
+              contentStyle={{
+                backgroundColor: "#1f2937",
+                border: "none",
+                borderRadius: "8px",
+                color: "#fff",
+              }}
+            />
+            <Legend />
+          </PieChart>
         </Chart>
 
-        <Chart title="📈 Desempeño por Técnico" height={350}>
-          <ResponsiveContainer width="100%" height={350}>
-            <RadarChart data={chartRadar}>
-              <PolarGrid stroke="#e5e7eb" />
-              <PolarAngleAxis dataKey="tecnico" tick={{ fontSize: 11 }} />
-              <PolarRadiusAxis tick={{ fontSize: 11 }} />
-              <Radar
-                name="Planificaciones"
-                dataKey="planificaciones"
-                stroke="#3b82f6"
-                fill="#3b82f6"
-                fillOpacity={0.6}
-              />
-              <Radar
-                name="Seguimientos"
-                dataKey="seguimientos"
-                stroke="#10b981"
-                fill="#10b981"
-                fillOpacity={0.6}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#1f2937",
-                  border: "none",
-                  borderRadius: "8px",
-                  color: "#fff",
-                }}
-              />
-              <Legend />
-            </RadarChart>
-          </ResponsiveContainer>
+        <Chart title="🚻 Participantes por Género" height={350}>
+          <PieChart>
+            <Pie
+              data={chartGenero}
+              dataKey="value"
+              nameKey="name"
+              cx="50%"
+              cy="50%"
+              outerRadius={110}
+              label={({ name, value }) => `${name}: ${value}`}
+            >
+              {chartGenero.map((_, i) => (
+                <Cell key={`genero-${i}`} fill={COLORS[i % COLORS.length]} />
+              ))}
+            </Pie>
+            <Tooltip
+              contentStyle={{
+                backgroundColor: "#1f2937",
+                border: "none",
+                borderRadius: "8px",
+                color: "#fff",
+              }}
+            />
+            <Legend />
+          </PieChart>
         </Chart>
       </div>
 
       {/* GRÁFICOS SECUNDARIOS */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Chart title="📊 Histórico Semanal" height={300}>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={chartSemanal}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis dataKey="semana" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#1f2937",
-                  border: "none",
-                  borderRadius: "8px",
-                  color: "#fff",
-                }}
-              />
-              <Legend />
-              <Bar
-                dataKey="planificaciones"
-                fill="#3b82f6"
-                name="Planificaciones"
-                radius={[8, 8, 0, 0]}
-              />
-              <Bar
-                dataKey="seguimientos"
-                fill="#10b981"
-                name="Seguimientos"
-                radius={[8, 8, 0, 0]}
-              />
-            </BarChart>
-          </ResponsiveContainer>
+          <BarChart data={chartSemanal}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis dataKey="semana" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: "#1f2937",
+                border: "none",
+                borderRadius: "8px",
+                color: "#fff",
+              }}
+            />
+            <Legend />
+            <Bar
+              dataKey="planificaciones"
+              fill="#3b82f6"
+              name="Planificaciones"
+              radius={[8, 8, 0, 0]}
+            />
+            <Bar
+              dataKey="seguimientos"
+              fill="#10b981"
+              name="Seguimientos"
+              radius={[8, 8, 0, 0]}
+            />
+          </BarChart>
         </Chart>
 
         <Chart title="📈 Tendencia de Asistentes" height={300}>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={chartTendencia}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis dataKey="semana" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#1f2937",
-                  border: "none",
-                  borderRadius: "8px",
-                  color: "#fff",
-                }}
-              />
-              <Line
-                type="monotone"
-                dataKey="asistentes"
-                stroke="#f59e0b"
-                strokeWidth={3}
-                dot={{ fill: "#f59e0b", r: 5 }}
-                name="Total Asistentes"
-              />
-            </LineChart>
-          </ResponsiveContainer>
+          <LineChart data={chartTendencia}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis dataKey="semana" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: "#1f2937",
+                border: "none",
+                borderRadius: "8px",
+                color: "#fff",
+              }}
+            />
+            <Line
+              type="monotone"
+              dataKey="asistentes"
+              stroke="#f59e0b"
+              strokeWidth={3}
+              dot={{ fill: "#f59e0b", r: 5 }}
+              name="Total Asistentes"
+            />
+          </LineChart>
         </Chart>
       </div>
 
@@ -775,11 +795,9 @@ export default function DashboardAdminPowerBI() {
               {chartCumplimiento.map((tecnico, idx) => {
                 const participantes =
                   chartPie.find((p) => p.name === tecnico.nombre)?.value || 0;
+
                 return (
-                  <tr
-                    key={idx}
-                    className="hover:bg-gray-50 transition-colors"
-                  >
+                  <tr key={idx} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4 font-medium text-gray-900">
                       {tecnico.nombre}
                     </td>
@@ -843,14 +861,14 @@ function KPI({
   subtitle?: string;
 }) {
   return (
-    <div className={`bg-gradient-to-br ${color} text-white p-6 rounded-lg shadow-md hover:shadow-lg transition`}>
+    <div
+      className={`bg-gradient-to-br ${color} text-white p-6 rounded-lg shadow-md hover:shadow-lg transition`}
+    >
       <div className="flex justify-between items-start">
         <div>
           <p className="text-sm opacity-90 font-semibold">{title}</p>
           <h3 className="text-3xl font-bold mt-2">{value}</h3>
-          {subtitle && (
-            <p className="text-xs opacity-75 mt-1">{subtitle}</p>
-          )}
+          {subtitle && <p className="text-xs opacity-75 mt-1">{subtitle}</p>}
         </div>
         <div className="opacity-80">{icon}</div>
       </div>

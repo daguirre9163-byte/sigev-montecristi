@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, useMemo } from "react";
 import { db } from "@/lib/firebase";
+import { useAuth } from "@/context/AuthContext";
 import {
   collection,
   getDocs,
@@ -27,6 +28,10 @@ interface Comunidad {
   tecnicoId: string;
   tecnicoNombre: string;
   estado: "activo" | "inactivo";
+  tecnicoAnteriorId?: string;
+  tecnicoAnteriorNombre?: string;
+  fechaReasignacion?: any;
+  reasignadoPor?: string;
   createdAt?: any;
   [key: string]: any;
 }
@@ -60,7 +65,6 @@ const INITIAL_FORM: FormData = {
 const validarFormulario = (form: FormData): ValidationError[] => {
   const errores: ValidationError[] = [];
 
-  // Validar nombre
   if (!form.nombre.trim()) {
     errores.push({
       field: "nombre",
@@ -73,7 +77,6 @@ const validarFormulario = (form: FormData): ValidationError[] => {
     });
   }
 
-  // Validar técnico
   if (!form.tecnicoId.trim()) {
     errores.push({
       field: "tecnicoId",
@@ -96,7 +99,6 @@ function useCargarDatos() {
       setLoading(true);
       setError(null);
 
-      // Cargar comunidades
       const comunidadesSnap = await getDocs(collection(db, "comunidades"));
       const listaC = comunidadesSnap.docs.map((d) => ({
         id: d.id,
@@ -106,7 +108,6 @@ function useCargarDatos() {
       listaC.sort((a, b) => a.nombre.localeCompare(b.nombre));
       setComunidades(listaC);
 
-      // Cargar técnicos activos
       const usuariosSnap = await getDocs(collection(db, "usuarios"));
       const listaT = usuariosSnap.docs
         .map((d) => ({ id: d.id, ...d.data() } as Tecnico))
@@ -133,7 +134,7 @@ function useCargarDatos() {
 }
 
 // ============ HOOK: Operaciones ============
-function useOperacionesComunidades() {
+function useOperacionesComunidades(userUid?: string) {
   const [procesando, setProcesando] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -161,17 +162,44 @@ function useOperacionesComunidades() {
   }, []);
 
   const actualizarComunidad = useCallback(
-    async (id: string, form: FormData): Promise<boolean> => {
+    async (
+      comunidadActual: Comunidad,
+      form: FormData
+    ): Promise<boolean> => {
       try {
         setProcesando(true);
         setError(null);
 
-        await updateDoc(doc(db, "comunidades", id), {
+        const cambioTecnico = comunidadActual.tecnicoId !== form.tecnicoId;
+
+        const updateData: any = {
           nombre: form.nombre.trim(),
           tecnicoId: form.tecnicoId,
           tecnicoNombre: form.tecnicoNombre.trim(),
           estado: form.estado,
-        });
+        };
+
+        if (cambioTecnico) {
+          updateData.tecnicoAnteriorId = comunidadActual.tecnicoId;
+          updateData.tecnicoAnteriorNombre = comunidadActual.tecnicoNombre;
+          updateData.fechaReasignacion = serverTimestamp();
+          updateData.reasignadoPor = userUid || "desconocido";
+        }
+
+        await updateDoc(doc(db, "comunidades", comunidadActual.id), updateData);
+
+        if (cambioTecnico) {
+          await addDoc(collection(db, "historialReasignaciones"), {
+            comunidadId: comunidadActual.id,
+            comunidadNombre: form.nombre.trim(),
+            tecnicoAnteriorId: comunidadActual.tecnicoId,
+            tecnicoAnteriorNombre: comunidadActual.tecnicoNombre,
+            tecnicoNuevoId: form.tecnicoId,
+            tecnicoNuevoNombre: form.tecnicoNombre.trim(),
+            fecha: serverTimestamp(),
+            usuarioQueReasigna: userUid || "desconocido",
+          });
+        }
 
         return true;
       } catch (err) {
@@ -182,7 +210,7 @@ function useOperacionesComunidades() {
         setProcesando(false);
       }
     },
-    []
+    [userUid]
   );
 
   const toggleEstado = useCallback(
@@ -469,12 +497,26 @@ function TablaComunidades({
           {comunidades.map((comunidad) => (
             <tr key={comunidad.id} className="hover:bg-gray-50 transition-colors">
               <td className="px-6 py-4 font-medium text-gray-900">
-                {comunidad.nombre}
+                <div className="flex flex-col">
+                  <span>{comunidad.nombre}</span>
+                  {comunidad.fechaReasignacion && (
+                    <span className="text-xs text-gray-500 mt-1">
+                      Reasignada recientemente
+                    </span>
+                  )}
+                </div>
               </td>
               <td className="px-6 py-4 text-gray-700">
-                <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium">
-                  {comunidad.tecnicoNombre}
-                </span>
+                <div className="flex flex-col gap-1">
+                  <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium inline-block w-fit">
+                    {comunidad.tecnicoNombre}
+                  </span>
+                  {comunidad.tecnicoAnteriorNombre && (
+                    <span className="text-xs text-gray-500">
+                      Antes: {comunidad.tecnicoAnteriorNombre}
+                    </span>
+                  )}
+                </div>
               </td>
               <td className="px-6 py-4 text-center">
                 <span
@@ -559,6 +601,8 @@ function Alert({ tipo, mensaje, onClose }: AlertProps) {
 
 // ============ COMPONENTE PRINCIPAL ============
 export default function ComunidadesAdmin() {
+  const { user } = useAuth();
+
   const { comunidades, tecnicos, loading, error: errorCarga, recargar } =
     useCargarDatos();
   const {
@@ -568,9 +612,10 @@ export default function ComunidadesAdmin() {
     procesando,
     error: errorOperacion,
     limpiarError,
-  } = useOperacionesComunidades();
+  } = useOperacionesComunidades(user?.uid);
 
   const [editandoId, setEditandoId] = useState<string | null>(null);
+  const [comunidadEditando, setComunidadEditando] = useState<Comunidad | null>(null);
   const [form, setForm] = useState<FormData>(INITIAL_FORM);
   const [alerta, setAlerta] = useState<{
     activa: boolean;
@@ -582,28 +627,29 @@ export default function ComunidadesAdmin() {
     mensaje: "",
   });
 
-  const erroresValidacion = useMemo(
-    () => validarFormulario(form),
-    [form]
-  );
+  const erroresValidacion = useMemo(() => validarFormulario(form), [form]);
 
-  // Manejadores
   const handleNuevaComunidad = useCallback(() => {
     setEditandoId(null);
+    setComunidadEditando(null);
     setForm(INITIAL_FORM);
     limpiarError();
   }, [limpiarError]);
 
-  const handleEditar = useCallback((comunidad: Comunidad) => {
-    setEditandoId(comunidad.id);
-    setForm({
-      nombre: comunidad.nombre,
-      tecnicoId: comunidad.tecnicoId,
-      tecnicoNombre: comunidad.tecnicoNombre,
-      estado: comunidad.estado,
-    });
-    limpiarError();
-  }, [limpiarError]);
+  const handleEditar = useCallback(
+    (comunidad: Comunidad) => {
+      setEditandoId(comunidad.id);
+      setComunidadEditando(comunidad);
+      setForm({
+        nombre: comunidad.nombre,
+        tecnicoId: comunidad.tecnicoId,
+        tecnicoNombre: comunidad.tecnicoNombre,
+        estado: comunidad.estado,
+      });
+      limpiarError();
+    },
+    [limpiarError]
+  );
 
   const handleSubmitForm = useCallback(async () => {
     if (erroresValidacion.length > 0) {
@@ -617,18 +663,28 @@ export default function ComunidadesAdmin() {
 
     let exito = false;
 
-    if (editandoId) {
-      exito = await actualizarComunidad(editandoId, form);
+    if (editandoId && comunidadEditando) {
+      exito = await actualizarComunidad(comunidadEditando, form);
     } else {
       exito = await crearComunidad(form);
     }
 
     if (exito) {
-      const accion = editandoId ? "actualizada" : "creada";
+      const cambioTecnico =
+        comunidadEditando && comunidadEditando.tecnicoId !== form.tecnicoId;
+
+      let mensaje = editandoId
+        ? "Comunidad actualizada correctamente"
+        : "Comunidad creada correctamente";
+
+      if (cambioTecnico) {
+        mensaje = "Comunidad reasignada correctamente";
+      }
+
       setAlerta({
         activa: true,
         tipo: "success",
-        mensaje: `Comunidad ${accion} correctamente`,
+        mensaje,
       });
       handleNuevaComunidad();
       recargar();
@@ -641,6 +697,7 @@ export default function ComunidadesAdmin() {
     }
   }, [
     editandoId,
+    comunidadEditando,
     form,
     erroresValidacion,
     actualizarComunidad,
@@ -673,7 +730,6 @@ export default function ComunidadesAdmin() {
     [toggleEstado, errorOperacion, recargar]
   );
 
-  // UI
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -690,7 +746,6 @@ export default function ComunidadesAdmin() {
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-7xl mx-auto space-y-6">
-        {/* Encabezado */}
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h1 className="text-4xl font-bold text-gray-900">
@@ -708,7 +763,6 @@ export default function ComunidadesAdmin() {
           </button>
         </div>
 
-        {/* Alertas */}
         {alerta.activa && (
           <Alert
             tipo={alerta.tipo}
@@ -725,7 +779,6 @@ export default function ComunidadesAdmin() {
           />
         )}
 
-        {/* Formulario */}
         <Formulario
           editandoId={editandoId}
           form={form}
@@ -737,7 +790,6 @@ export default function ComunidadesAdmin() {
           tecnicos={tecnicos}
         />
 
-        {/* Tabla */}
         <div>
           <h2 className="text-2xl font-bold text-gray-900 mb-4">
             Comunidades Registradas ({comunidades.length})
@@ -750,7 +802,6 @@ export default function ComunidadesAdmin() {
           />
         </div>
 
-        {/* Info útil */}
         {tecnicos.length === 0 && (
           <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
             <p className="text-yellow-800 font-medium">

@@ -34,6 +34,7 @@ interface Participante {
   inclusion: "Mz" | "I" | "A" | "Mn" | "O" | "";
   comunidadId: string;
   tecnicoId: string;
+  creadoPor?: string;
   estado: "activo" | "inactivo";
   fechaRegistro?: any;
   [key: string]: any;
@@ -165,13 +166,13 @@ function useCargarDatos(userId: string | undefined) {
 }
 
 // ============ HOOK: Cargar participantes ============
-function useCargarParticipantes(userId: string | undefined, comunidadId: string) {
+function useCargarParticipantes(comunidadId: string) {
   const [participantes, setParticipantes] = useState<Participante[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const cargar = useCallback(async () => {
-    if (!userId || !comunidadId) return;
+    if (!comunidadId) return;
 
     try {
       setLoading(true);
@@ -179,7 +180,6 @@ function useCargarParticipantes(userId: string | undefined, comunidadId: string)
 
       const q = query(
         collection(db, "participantes"),
-        where("tecnicoId", "==", userId),
         where("comunidadId", "==", comunidadId)
       );
 
@@ -197,7 +197,7 @@ function useCargarParticipantes(userId: string | undefined, comunidadId: string)
     } finally {
       setLoading(false);
     }
-  }, [userId, comunidadId]);
+  }, [comunidadId]);
 
   useEffect(() => {
     cargar();
@@ -366,27 +366,13 @@ function TablaParticipantes({
       <table className="w-full">
         <thead className="bg-gradient-to-r from-green-600 to-green-700 text-white">
           <tr>
-            <th className="px-6 py-3 text-left text-sm font-semibold">
-              Nombre
-            </th>
-            <th className="px-6 py-3 text-center text-sm font-semibold">
-              Edad
-            </th>
-            <th className="px-6 py-3 text-center text-sm font-semibold">
-              Género
-            </th>
-            <th className="px-6 py-3 text-center text-sm font-semibold">
-              PLAN
-            </th>
-            <th className="px-6 py-3 text-center text-sm font-semibold">
-              Inclusión
-            </th>
-            <th className="px-6 py-3 text-center text-sm font-semibold">
-              Estado
-            </th>
-            <th className="px-6 py-3 text-right text-sm font-semibold">
-              Acciones
-            </th>
+            <th className="px-6 py-3 text-left text-sm font-semibold">Nombre</th>
+            <th className="px-6 py-3 text-center text-sm font-semibold">Edad</th>
+            <th className="px-6 py-3 text-center text-sm font-semibold">Género</th>
+            <th className="px-6 py-3 text-center text-sm font-semibold">PLAN</th>
+            <th className="px-6 py-3 text-center text-sm font-semibold">Inclusión</th>
+            <th className="px-6 py-3 text-center text-sm font-semibold">Estado</th>
+            <th className="px-6 py-3 text-right text-sm font-semibold">Acciones</th>
           </tr>
         </thead>
         <tbody className="divide-y">
@@ -546,8 +532,8 @@ export default function ParticipantesPage() {
   const [busqueda, setBusqueda] = useState("");
   const [mostrarInactivos, setMostrarInactivos] = useState(false);
 
-  const { participantes, setParticipantes, loading: loadingParticipantes, recargar } =
-    useCargarParticipantes(user?.uid, filtroComunidad);
+  const { participantes, loading: loadingParticipantes, recargar } =
+    useCargarParticipantes(filtroComunidad);
 
   const [editandoId, setEditandoId] = useState<string | null>(null);
   const [form, setForm] = useState<FormData>(INITIAL_FORM);
@@ -563,12 +549,8 @@ export default function ParticipantesPage() {
     mensaje: "",
   });
 
-  const erroresValidacion = useMemo(
-    () => validarFormulario(form),
-    [form]
-  );
+  const erroresValidacion = useMemo(() => validarFormulario(form), [form]);
 
-  // Filtrar participantes
   const participantesFiltrados = useMemo(() => {
     return participantes.filter((p) => {
       const filtroEstado = mostrarInactivos
@@ -583,7 +565,6 @@ export default function ParticipantesPage() {
     });
   }, [participantes, busqueda, mostrarInactivos]);
 
-  // Indicadores
   const indicadores = useMemo(() => {
     const activos = participantes.filter((p) => p.estado === "activo");
     return {
@@ -595,7 +576,6 @@ export default function ParticipantesPage() {
     };
   }, [participantes]);
 
-  // Manejadores
   const handleLimpiarFormulario = useCallback(() => {
     setEditandoId(null);
     setForm(INITIAL_FORM);
@@ -635,13 +615,17 @@ export default function ParticipantesPage() {
     try {
       setProcesando(true);
 
+      const comunidadSeleccionada = comunidades.find(
+        (c) => c.id === filtroComunidad
+      );
+
       const data = {
         ...form,
         edad: Number(form.edad),
         comunidadId: filtroComunidad,
-        tecnicoId: user.uid,
+        tecnicoId: comunidadSeleccionada?.tecnicoId || user.uid,
+        creadoPor: user.uid,
         estado: "activo",
-        fechaRegistro: serverTimestamp(),
       };
 
       if (editandoId) {
@@ -652,7 +636,10 @@ export default function ParticipantesPage() {
           mensaje: "Participante actualizado correctamente",
         });
       } else {
-        await addDoc(collection(db, "participantes"), data);
+        await addDoc(collection(db, "participantes"), {
+          ...data,
+          fechaRegistro: serverTimestamp(),
+        });
         setAlerta({
           activa: true,
           tipo: "success",
@@ -680,6 +667,7 @@ export default function ParticipantesPage() {
     editandoId,
     handleLimpiarFormulario,
     recargar,
+    comunidades,
   ]);
 
   const handleToggleEstado = useCallback(
@@ -731,7 +719,6 @@ export default function ParticipantesPage() {
 
       try {
         setProcesando(true);
-        // Eliminar de verdad (no solo marcar como inactivo)
         await updateDoc(doc(db, "participantes", id), {
           estado: "eliminado",
           eliminadoEn: serverTimestamp(),
@@ -758,7 +745,6 @@ export default function ParticipantesPage() {
     [recargar]
   );
 
-  // UI: Cargando comunidades
   if (loadingComunidades) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -770,7 +756,6 @@ export default function ParticipantesPage() {
     );
   }
 
-  // UI: Error cargando comunidades
   if (errorComunidades) {
     return (
       <div className="bg-red-50 border border-red-200 rounded-lg p-4">
@@ -782,7 +767,6 @@ export default function ParticipantesPage() {
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-7xl mx-auto space-y-6">
-        {/* Encabezado */}
         <div>
           <h1 className="text-4xl font-bold text-gray-900">
             👥 Gestión de Participantes
@@ -792,7 +776,6 @@ export default function ParticipantesPage() {
           </p>
         </div>
 
-        {/* Alertas */}
         {alerta.activa && (
           <Alerta
             tipo={alerta.tipo}
@@ -801,7 +784,6 @@ export default function ParticipantesPage() {
           />
         )}
 
-        {/* Selección de comunidad */}
         <div className="bg-white rounded-lg shadow-md p-6">
           <label className="block text-sm font-semibold text-gray-700 mb-3">
             🏘️ Selecciona una Comunidad
@@ -826,7 +808,6 @@ export default function ParticipantesPage() {
           </select>
         </div>
 
-        {/* Indicadores */}
         {filtroComunidad && !loadingParticipantes && (
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <Indicador
@@ -862,7 +843,6 @@ export default function ParticipantesPage() {
           </div>
         )}
 
-        {/* Formulario */}
         {filtroComunidad && (
           <div className="bg-white rounded-lg shadow-md p-6 space-y-4">
             <h2 className="text-xl font-bold text-gray-900">
@@ -887,8 +867,7 @@ export default function ParticipantesPage() {
                 value={form.apellidos}
                 onChange={(value) => setForm({ ...form, apellidos: value })}
                 error={
-                  erroresValidacion.find((e) => e.field === "apellidos")
-                    ?.message
+                  erroresValidacion.find((e) => e.field === "apellidos")?.message
                 }
                 required
               />
@@ -931,8 +910,7 @@ export default function ParticipantesPage() {
                   { value: "NO", label: "✕ No" },
                 ]}
                 error={
-                  erroresValidacion.find((e) => e.field === "familiaPlan")
-                    ?.message
+                  erroresValidacion.find((e) => e.field === "familiaPlan")?.message
                 }
                 required
               />
@@ -943,8 +921,7 @@ export default function ParticipantesPage() {
                 onChange={(value) => setForm({ ...form, inclusion: value as any })}
                 options={OPCIONES_INCLUSION}
                 error={
-                  erroresValidacion.find((e) => e.field === "inclusion")
-                    ?.message
+                  erroresValidacion.find((e) => e.field === "inclusion")?.message
                 }
                 required
               />
@@ -976,7 +953,6 @@ export default function ParticipantesPage() {
           </div>
         )}
 
-        {/* Búsqueda y filtros */}
         {filtroComunidad && (
           <div className="bg-white rounded-lg shadow-md p-6 space-y-4">
             <div className="flex flex-col md:flex-row gap-4">
@@ -1006,7 +982,6 @@ export default function ParticipantesPage() {
           </div>
         )}
 
-        {/* Tabla */}
         {filtroComunidad && (
           <div>
             <h2 className="text-2xl font-bold text-gray-900 mb-4">
@@ -1034,7 +1009,6 @@ export default function ParticipantesPage() {
           </div>
         )}
 
-        {/* Mensaje cuando no hay comunidad seleccionada */}
         {!filtroComunidad && (
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-8 text-center">
             <p className="text-blue-800 text-lg font-medium">

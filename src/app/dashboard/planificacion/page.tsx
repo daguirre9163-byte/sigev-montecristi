@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { getSemanaActiva } from "@/lib/getSemanaActiva";
 import { getComunidadesByTecnico } from "@/lib/getComunidadesByTecnico";
@@ -34,6 +34,7 @@ interface Semana {
 interface Comunidad {
   id: string;
   nombre: string;
+  tecnicoId?: string;
   [key: string]: any;
 }
 
@@ -82,6 +83,45 @@ interface Alerta {
   [key: string]: any;
 }
 
+// ============ UTILIDADES ============
+const normalizarFecha = (valor: any): string => {
+  if (!valor) return "";
+
+  if (typeof valor === "string") {
+    const texto = valor.trim();
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(texto)) {
+      return texto;
+    }
+
+    const fecha = new Date(texto);
+    if (!isNaN(fecha.getTime())) {
+      return fecha.toISOString().split("T")[0];
+    }
+  }
+
+  if (valor instanceof Date && !isNaN(valor.getTime())) {
+    return valor.toISOString().split("T")[0];
+  }
+
+  return "";
+};
+
+const obtenerDiaCorto = (fecha: string): string => {
+  if (!fecha) return "";
+  const fechaObj = new Date(`${fecha}T00:00:00`);
+  if (isNaN(fechaObj.getTime())) return "";
+
+  const opciones: Intl.DateTimeFormatOptions = {
+    day: "2-digit",
+    month: "short",
+  };
+
+  return fechaObj
+    .toLocaleDateString("es-ES", opciones)
+    .replace(".", "");
+};
+
 // ============ HOOK: Cargar datos ============
 function useCargarDatos(userId: string | undefined) {
   const [semanaActiva, setSemanaActiva] = useState<Semana | null>(null);
@@ -105,22 +145,25 @@ function useCargarDatos(userId: string | undefined) {
 
       // 2. Cargar comunidades del técnico
       const comunidadesData = await getComunidadesByTecnico(userId);
-      setComunidades(comunidadesData);
+      setComunidades(
+        comunidadesData
+          .map((c) => ({
+            ...c,
+            tecnicoId: c.tecnicoId || userId,
+          }))
+          .sort((a, b) => a.nombre.localeCompare(b.nombre))
+      );
 
       // 3. Cargar participantes
-      const participantesSnap = await getDocs(
-        collection(db, "participantes")
-      );
+      const participantesSnap = await getDocs(collection(db, "participantes"));
       const listaParticipantes = participantesSnap.docs.map((d) => ({
         id: d.id,
         ...d.data(),
-      } as Participante));
+      })) as Participante[];
       setParticipantes(listaParticipantes);
 
       // 4. Cargar eventos globales asignados al técnico
-      const eventosSnap = await getDocs(
-        collection(db, "eventosGlobales")
-      );
+      const eventosSnap = await getDocs(collection(db, "eventosGlobales"));
       let eventos = eventosSnap.docs
         .map((d) => ({ id: d.id, ...d.data() } as EventoGlobal))
         .filter(
@@ -145,15 +188,12 @@ function useCargarDatos(userId: string | undefined) {
 
       // 6. Cargar alertas del técnico
       const alertasSnap = await getDocs(
-        query(
-          collection(db, "alertas"),
-          where("tecnicoId", "==", userId)
-        )
+        query(collection(db, "alertas"), where("tecnicoId", "==", userId))
       );
       const listaAlertas = alertasSnap.docs.map((d) => ({
         id: d.id,
         ...d.data(),
-      } as Alerta));
+      })) as Alerta[];
       setAlertas(listaAlertas.filter((a) => a.estado === "pendiente"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error al cargar datos");
@@ -205,10 +245,27 @@ function usePlanificacion(
         const docSnap = snapshot.docs[0];
         const data = docSnap.data();
 
+        const actividadesNormalizadas = (data.actividades || []).map((act: any) => ({
+          comunidadId: act.comunidadId || "",
+          comunidadNombre: act.comunidadNombre || "",
+          componente: act.componente || "",
+          actividad: act.actividad || "",
+          dia: act.dia || obtenerDiaCorto(normalizarFecha(act.fecha)),
+          fecha: normalizarFecha(act.fecha),
+          horario: act.horario || "",
+          objetivoEspecifico: act.objetivoEspecifico || "",
+          productoEsperado: act.productoEsperado || "",
+        })) as Actividad[];
+
         setPlanId(docSnap.id);
         setObjetivo(data.objetivoSemana || "");
-        setActividades(data.actividades || []);
+        setActividades(actividadesNormalizadas);
         setEstado(data.estado || "borrador");
+      } else {
+        setPlanId(null);
+        setObjetivo("");
+        setActividades([]);
+        setEstado("borrador");
       }
     } catch (error) {
       console.error("Error al cargar planificación:", error);
@@ -250,16 +307,14 @@ function CardAlerta({
 }: CardAlertaProps) {
   if (!evento) return null;
 
-  const es_reunion = alerta.tipo === "reunion";
+  const esReunion = alerta.tipo === "reunion";
 
   return (
     <div className="bg-white rounded-lg shadow-md border-l-4 border-orange-500 p-4 space-y-3">
       <div className="flex items-start justify-between">
         <div className="flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-xl">
-              {es_reunion ? "📋" : "🏘️"}
-            </span>
+            <span className="text-xl">{esReunion ? "📋" : "🏘️"}</span>
             <h3 className="font-bold text-gray-900">{evento.titulo}</h3>
           </div>
           <p className="text-sm text-gray-600 mt-1">
@@ -271,14 +326,14 @@ function CardAlerta({
           )}
         </div>
         <div className="bg-orange-100 text-orange-800 px-3 py-1 rounded-full text-xs font-semibold">
-          {es_reunion ? "Confirmación" : "Configuración"}
+          {esReunion ? "Confirmación" : "Configuración"}
         </div>
       </div>
 
       <p className="text-sm text-gray-700">{evento.objetivo}</p>
 
       <div className="flex gap-2">
-        {es_reunion ? (
+        {esReunion ? (
           <button
             onClick={onConfirmar}
             disabled={procesando}
@@ -300,7 +355,7 @@ function CardAlerta({
   );
 }
 
-// ============ COMPONENTE: Modal Reunión (Confirmación simple) ============
+// ============ COMPONENTE: Modal Reunión ============
 interface ModalReunionProps {
   evento: EventoGlobal;
   onConfirmar: () => void;
@@ -374,7 +429,7 @@ function ModalReunion({
   );
 }
 
-// ============ COMPONENTE: Modal Encuentro (Selección de comunidades y participantes) ============
+// ============ COMPONENTE: Modal Encuentro ============
 interface ModalEncuentroProps {
   evento: EventoGlobal;
   comunidades: Comunidad[];
@@ -448,9 +503,7 @@ function ModalEncuentro({
               <label className="flex items-center gap-2 font-semibold cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={
-                    respuestasEvento[comunidad.id]?.participa === "si"
-                  }
+                  checked={respuestasEvento[comunidad.id]?.participa === "si"}
                   onChange={(e) =>
                     onRespuestaChange(
                       comunidad.id,
@@ -470,24 +523,18 @@ function ModalEncuentro({
                       Seleccionar participantes
                     </label>
 
-                    {/* Botón Todos */}
                     <button
                       onClick={() => {
                         const todos = participantes
                           .filter((p) => p.comunidadId === comunidad.id)
                           .map((p) => p.id);
-                        onRespuestaChange(
-                          comunidad.id,
-                          "participantes",
-                          todos
-                        );
+                        onRespuestaChange(comunidad.id, "participantes", todos);
                       }}
                       className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded mt-1 transition"
                     >
                       ✓ Todos
                     </button>
 
-                    {/* Lista de participantes */}
                     <div className="grid grid-cols-2 gap-2 mt-2 text-sm">
                       {participantes
                         .filter((p) => p.comunidadId === comunidad.id)
@@ -501,13 +548,11 @@ function ModalEncuentro({
                               checked={
                                 respuestasEvento[
                                   comunidad.id
-                                ]?.participantes?.includes(participante.id) ||
-                                false
+                                ]?.participantes?.includes(participante.id) || false
                               }
                               onChange={(e) => {
                                 const lista =
-                                  respuestasEvento[comunidad.id]
-                                    ?.participantes || [];
+                                  respuestasEvento[comunidad.id]?.participantes || [];
                                 if (e.target.checked) {
                                   onRespuestaChange(
                                     comunidad.id,
@@ -518,9 +563,7 @@ function ModalEncuentro({
                                   onRespuestaChange(
                                     comunidad.id,
                                     "participantes",
-                                    lista.filter(
-                                      (id: string) => id !== participante.id
-                                    )
+                                    lista.filter((id: string) => id !== participante.id)
                                   );
                                 }
                               }}
@@ -607,12 +650,8 @@ export default function PlanificacionPage() {
     setEstado,
   } = usePlanificacion(user?.uid, semanaActiva?.id);
 
-  const [eventoModalActivo, setEventoModalActivo] = useState<string | null>(
-    null
-  );
-  const [tipoModalActivo, setTipoModalActivo] = useState<"reunion" | "encuentro" | null>(
-    null
-  );
+  const [eventoModalActivo, setEventoModalActivo] = useState<string | null>(null);
+  const [tipoModalActivo, setTipoModalActivo] = useState<"reunion" | "encuentro" | null>(null);
   const [respuestasEvento, setRespuestasEvento] = useState<Record<string, any>>(
     {}
   );
@@ -693,7 +732,6 @@ export default function PlanificacionPage() {
     async (eventoId: string) => {
       if (!user) return;
 
-      // Validar que al menos una comunidad fue seleccionada
       const algunaSeleccionada = Object.values(respuestasEvento).some(
         (r: any) => r.participa === "si"
       );
@@ -728,23 +766,17 @@ export default function PlanificacionPage() {
     [user, respuestasEvento, recargar]
   );
 
-  const handleAbreModalReunion = useCallback(
-    (eventoId: string) => {
-      setEventoModalActivo(eventoId);
-      setTipoModalActivo("reunion");
-      setRespuestasEvento({});
-    },
-    []
-  );
+  const handleAbreModalReunion = useCallback((eventoId: string) => {
+    setEventoModalActivo(eventoId);
+    setTipoModalActivo("reunion");
+    setRespuestasEvento({});
+  }, []);
 
-  const handleAbreModalEncuentro = useCallback(
-    (eventoId: string) => {
-      setEventoModalActivo(eventoId);
-      setTipoModalActivo("encuentro");
-      setRespuestasEvento({});
-    },
-    []
-  );
+  const handleAbreModalEncuentro = useCallback((eventoId: string) => {
+    setEventoModalActivo(eventoId);
+    setTipoModalActivo("encuentro");
+    setRespuestasEvento({});
+  }, []);
 
   const handleAgregarActividad = useCallback(() => {
     if (estado === "enviado") {
@@ -773,27 +805,41 @@ export default function PlanificacionPage() {
       if (estado === "enviado") return;
 
       const nuevas = [...actividades];
-      nuevas[index][campo as keyof Actividad] = valor;
 
       if (campo === "fecha") {
-        const fechaObj = new Date(valor);
-        const opciones: Intl.DateTimeFormatOptions = {
-          day: "2-digit",
-          month: "short",
-        };
-        nuevas[index].dia = fechaObj
-          .toLocaleDateString("es-ES", opciones)
-          .replace(".", "");
+        const fechaNormalizada = normalizarFecha(valor);
+        nuevas[index].fecha = fechaNormalizada;
+        nuevas[index].dia = obtenerDiaCorto(fechaNormalizada);
+        setActividades(nuevas);
+        return;
       }
 
       if (campo === "comunidadId") {
         const comunidad = comunidades.find((c) => c.id === valor);
+        nuevas[index].comunidadId = valor;
         nuevas[index].comunidadNombre = comunidad?.nombre || "";
+        setActividades(nuevas);
+        return;
       }
 
+      nuevas[index][campo as keyof Actividad] = valor as never;
       setActividades(nuevas);
     },
     [estado, actividades, comunidades, setActividades]
+  );
+
+  const handleEliminarActividad = useCallback(
+    (index: number) => {
+      if (estado === "enviado") return;
+
+      const confirmar = confirm("¿Eliminar esta actividad?");
+      if (!confirmar) return;
+
+      const nuevas = [...actividades];
+      nuevas.splice(index, 1);
+      setActividades(nuevas);
+    },
+    [estado, actividades, setActividades]
   );
 
   const handleValidar = useCallback(() => {
@@ -805,6 +851,40 @@ export default function PlanificacionPage() {
     if (actividades.length === 0) {
       alert("Debe agregar al menos una actividad");
       return false;
+    }
+
+    for (let i = 0; i < actividades.length; i++) {
+      const act = actividades[i];
+
+      if (!act.comunidadId) {
+        alert(`La actividad #${i + 1} no tiene comunidad seleccionada`);
+        return false;
+      }
+
+      if (!act.actividad.trim()) {
+        alert(`La actividad #${i + 1} no tiene nombre de actividad`);
+        return false;
+      }
+
+      if (!normalizarFecha(act.fecha)) {
+        alert(`La actividad #${i + 1} no tiene fecha válida`);
+        return false;
+      }
+
+      if (!act.horario.trim()) {
+        alert(`La actividad #${i + 1} no tiene horario`);
+        return false;
+      }
+
+      if (!act.objetivoEspecifico.trim()) {
+        alert(`La actividad #${i + 1} no tiene objetivo específico`);
+        return false;
+      }
+
+      if (!act.productoEsperado.trim()) {
+        alert(`La actividad #${i + 1} no tiene producto esperado`);
+        return false;
+      }
     }
 
     return true;
@@ -823,12 +903,27 @@ export default function PlanificacionPage() {
       try {
         setProcesando(true);
 
+        const actividadesNormalizadas = actividades.map((act) => {
+          const comunidad = comunidades.find((c) => c.id === act.comunidadId);
+
+          const fechaNormalizada = normalizarFecha(act.fecha);
+
+          return {
+            ...act,
+            comunidadNombre: comunidad?.nombre || act.comunidadNombre || "",
+            fecha: fechaNormalizada,
+            dia: obtenerDiaCorto(fechaNormalizada),
+          };
+        });
+
         const data = {
           semanaId: semanaActiva.id,
           tecnicoId: user.uid,
+          tecnicoIdAutor: user.uid,
+          creadoPor: user.uid,
           tecnicoEmail: user.email,
-          objetivoSemana: objetivo,
-          actividades,
+          objetivoSemana: objetivo.trim(),
+          actividades: actividadesNormalizadas,
           estado: nuevoEstado,
           fechaActualizacion: serverTimestamp(),
         };
@@ -836,14 +931,16 @@ export default function PlanificacionPage() {
         if (planId) {
           await updateDoc(doc(db, "planificaciones", planId), data);
         } else {
-          const docRef = await addDoc(
-            collection(db, "planificaciones"),
-            data
-          );
+          const docRef = await addDoc(collection(db, "planificaciones"), {
+            ...data,
+            createdAt: serverTimestamp(),
+          });
           setPlanId(docRef.id);
         }
 
+        setActividades(actividadesNormalizadas);
         setEstado(nuevoEstado);
+
         alert(
           nuevoEstado === "enviado"
             ? "✅ Planificación enviada correctamente"
@@ -863,30 +960,37 @@ export default function PlanificacionPage() {
       planId,
       objetivo,
       actividades,
+      comunidades,
       handleValidar,
       setEstado,
       setPlanId,
+      setActividades,
     ]
   );
 
   const handleGenerarPDF = useCallback(() => {
     if (!semanaActiva) return;
 
-    const doc = new jsPDF();
+    const pdf = new jsPDF();
+    const actividadesOrdenadas = [...actividades].sort((a, b) => {
+      const fechaA = new Date(a.fecha).getTime();
+      const fechaB = new Date(b.fecha).getTime();
+      return fechaA - fechaB;
+    });
 
-    doc.setFontSize(14);
-    doc.text("PROYECTO MONTECRISTI CRECE EN VALORES", 14, 15);
+    pdf.setFontSize(14);
+    pdf.text("PROYECTO MONTECRISTI CRECE EN VALORES", 14, 15);
 
-    doc.setFontSize(11);
-    doc.text(
+    pdf.setFontSize(11);
+    pdf.text(
       `Semana: ${semanaActiva.fechaInicio} al ${semanaActiva.fechaFin}`,
       14,
       25
     );
 
-    doc.text(`Objetivo: ${objetivo}`, 14, 35);
+    pdf.text(`Objetivo: ${objetivo}`, 14, 35);
 
-    const tableData = actividades.map((act, index) => [
+    const tableData = actividadesOrdenadas.map((act, index) => [
       String(index + 1),
       act.comunidadNombre,
       act.componente,
@@ -897,7 +1001,7 @@ export default function PlanificacionPage() {
       act.productoEsperado,
     ]);
 
-    autoTable(doc, {
+    autoTable(pdf, {
       startY: 45,
       head: [
         [
@@ -915,7 +1019,7 @@ export default function PlanificacionPage() {
       styles: { fontSize: 8 },
     });
 
-    doc.save(
+    pdf.save(
       `Planificacion_${semanaActiva.fechaInicio}_${semanaActiva.fechaFin}.pdf`
     );
   }, [semanaActiva, objetivo, actividades]);
@@ -953,9 +1057,7 @@ export default function PlanificacionPage() {
     );
   }
 
-  const eventoActual = eventosGlobales.find(
-    (e) => e.id === eventoModalActivo
-  );
+  const eventoActual = eventosGlobales.find((e) => e.id === eventoModalActivo);
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
@@ -970,7 +1072,7 @@ export default function PlanificacionPage() {
           </p>
         </div>
 
-        {/* Estado de planificación */}
+        {/* Estado */}
         <div
           className={`rounded-lg p-4 font-semibold flex items-center gap-2 ${
             estado === "enviado"
@@ -993,10 +1095,7 @@ export default function PlanificacionPage() {
             </div>
 
             {alertas.map((alerta) => {
-              const evento = eventosGlobales.find(
-                (e) => e.id === alerta.eventoId
-              );
-              const esReunion = alerta.tipo === "reunion";
+              const evento = eventosGlobales.find((e) => e.id === alerta.eventoId);
 
               return (
                 <CardAlerta
@@ -1068,7 +1167,17 @@ export default function PlanificacionPage() {
 
           {/* Actividades */}
           <div className="space-y-4">
-            <h3 className="text-lg font-bold text-gray-900">Actividades</h3>
+            <div className="flex items-center justify-between gap-4">
+              <h3 className="text-lg font-bold text-gray-900">Actividades</h3>
+              {estado !== "enviado" && (
+                <button
+                  onClick={handleAgregarActividad}
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition"
+                >
+                  ➕ Agregar actividad
+                </button>
+              )}
+            </div>
 
             {actividades.length === 0 ? (
               <div className="bg-gray-50 rounded-lg p-8 text-center text-gray-500">
@@ -1080,16 +1189,34 @@ export default function PlanificacionPage() {
                   key={index}
                   className="bg-white rounded-lg shadow-md p-6 space-y-3 border-l-4 border-blue-500"
                 >
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <h4 className="font-bold text-gray-900">
+                        Actividad #{index + 1}
+                      </h4>
+                      {actividad.comunidadNombre && (
+                        <p className="text-sm text-gray-500 mt-1">
+                          Comunidad: {actividad.comunidadNombre}
+                        </p>
+                      )}
+                    </div>
+
+                    {estado !== "enviado" && (
+                      <button
+                        onClick={() => handleEliminarActividad(index)}
+                        className="text-red-600 hover:text-red-700 font-semibold text-sm"
+                      >
+                        🗑️ Eliminar
+                      </button>
+                    )}
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <select
                       className="border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       value={actividad.comunidadId}
                       onChange={(e) =>
-                        handleActualizarActividad(
-                          index,
-                          "comunidadId",
-                          e.target.value
-                        )
+                        handleActualizarActividad(index, "comunidadId", e.target.value)
                       }
                       disabled={estado === "enviado"}
                     >
@@ -1106,11 +1233,7 @@ export default function PlanificacionPage() {
                       className="border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       value={actividad.componente}
                       onChange={(e) =>
-                        handleActualizarActividad(
-                          index,
-                          "componente",
-                          e.target.value
-                        )
+                        handleActualizarActividad(index, "componente", e.target.value)
                       }
                       disabled={estado === "enviado"}
                     />
@@ -1121,11 +1244,7 @@ export default function PlanificacionPage() {
                     className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     value={actividad.actividad}
                     onChange={(e) =>
-                      handleActualizarActividad(
-                        index,
-                        "actividad",
-                        e.target.value
-                      )
+                      handleActualizarActividad(index, "actividad", e.target.value)
                     }
                     disabled={estado === "enviado"}
                   />
@@ -1136,11 +1255,7 @@ export default function PlanificacionPage() {
                       className="border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       value={actividad.fecha || ""}
                       onChange={(e) =>
-                        handleActualizarActividad(
-                          index,
-                          "fecha",
-                          e.target.value
-                        )
+                        handleActualizarActividad(index, "fecha", e.target.value)
                       }
                       disabled={estado === "enviado"}
                     />
@@ -1150,11 +1265,7 @@ export default function PlanificacionPage() {
                       className="border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       value={actividad.horario}
                       onChange={(e) =>
-                        handleActualizarActividad(
-                          index,
-                          "horario",
-                          e.target.value
-                        )
+                        handleActualizarActividad(index, "horario", e.target.value)
                       }
                       disabled={estado === "enviado"}
                     />
@@ -1196,14 +1307,6 @@ export default function PlanificacionPage() {
 
           {/* Botones */}
           <div className="flex flex-wrap gap-3">
-            <button
-              onClick={handleAgregarActividad}
-              disabled={estado === "enviado"}
-              className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-bold py-2 px-4 rounded-lg transition"
-            >
-              ➕ Agregar actividad
-            </button>
-
             <button
               onClick={() => handleGuardarPlanificacion("borrador")}
               disabled={procesando || estado === "enviado"}

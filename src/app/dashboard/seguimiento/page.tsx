@@ -42,7 +42,6 @@ interface Participante {
   [key: string]: any;
 }
 
-// ============ ACTIVIDADES REGULARES (de Planificación) ============
 interface ActividadRegular {
   comunidadId: string;
   comunidadNombre: string;
@@ -60,7 +59,6 @@ interface ActividadRegular {
   fechaReprogramada: string;
 }
 
-// ============ EVENTOS GLOBALES EN SEGUIMIENTO (Reuniones) ============
 interface SeguimientoReunion {
   eventoId: string;
   eventoTitulo: string;
@@ -68,18 +66,13 @@ interface SeguimientoReunion {
   horario: string;
   lugar: string;
   objetivo: string;
-  
-  // Confirmación (de Planificación)
   confirmado: boolean;
-  
-  // Ejecución (de Seguimiento)
   ejecutado: boolean;
   estado: "realizada" | "cancelada" | "suspendida";
   motivoNoEjecucion?: string;
   observaciones: string;
 }
 
-// ============ EVENTOS GLOBALES EN SEGUIMIENTO (Encuentros) ============
 interface SeguimientoEncuentro {
   eventoId: string;
   eventoTitulo: string;
@@ -88,20 +81,15 @@ interface SeguimientoEncuentro {
   horario: string;
   lugar: string;
   objetivo: string;
-  
-  // Confirmación (de Planificación)
   confirmado: boolean;
   comunidadesConfirmadas: Array<{
     comunidadId: string;
     comunidadNombre: string;
     participa: "si" | "no";
   }>;
-  
-  // Ejecución (de Seguimiento)
   ejecutado: boolean;
   estado: "realizada" | "cancelada" | "suspendida";
   motivoNoEjecucion?: string;
-  
   comunidadesEjecutadas: Array<{
     comunidadId: string;
     comunidadNombre: string;
@@ -124,22 +112,41 @@ interface Alerta {
   [key: string]: any;
 }
 
-// ============ ESTRUCTURA PRINCIPAL DE SEGUIMIENTO ============
 interface Seguimiento {
   id?: string;
   semanaId: string;
   tecnicoId: string;
   estado: "borrador" | "enviado";
-  
-  // Secciones
   actividadesRegulares: ActividadRegular[];
   reuniones: SeguimientoReunion[];
   encuentros: SeguimientoEncuentro[];
-  
-  // Metadata
   fechaActualizacion?: any;
   createdAt?: any;
 }
+
+// ============ UTILIDAD ============
+const normalizarFecha = (valor: any): string => {
+  if (!valor) return "";
+
+  if (typeof valor === "string") {
+    const texto = valor.trim();
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(texto)) {
+      return texto;
+    }
+
+    const fecha = new Date(texto);
+    if (!isNaN(fecha.getTime())) {
+      return fecha.toISOString().split("T")[0];
+    }
+  }
+
+  if (valor instanceof Date && !isNaN(valor.getTime())) {
+    return valor.toISOString().split("T")[0];
+  }
+
+  return "";
+};
 
 // ============ HOOK: Cargar datos ============
 function useCargarDatos(userId: string | undefined) {
@@ -151,6 +158,131 @@ function useCargarDatos(userId: string | undefined) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const crearSeguimientoInicial = useCallback(async (semanaId: string, userId: string) => {
+    try {
+      const planQuery = query(
+        collection(db, "planificaciones"),
+        where("semanaId", "==", semanaId),
+        where("tecnicoId", "==", userId),
+        where("estado", "==", "enviado")
+      );
+
+      const planSnap = await getDocs(planQuery);
+
+      if (!planSnap.empty) {
+        const planData = planSnap.docs[0].data();
+
+        const actBase: ActividadRegular[] = (planData.actividades || []).map(
+          (act: any) => ({
+            comunidadId: act.comunidadId,
+            comunidadNombre: act.comunidadNombre,
+            actividadPlanificada: act.actividad,
+            actividadRealizada: "",
+            tipoEjecucionActividad: "planificada",
+            motivoCambioActividad: "",
+            asistentesIds: [],
+            porcentajeAsistencia: 0,
+            evidenciasFotos: [],
+            evidenciaListaPdf: "",
+            fecha: normalizarFecha(act.fecha),
+            estadoActividad: "realizada",
+            motivoNoRealizada: "",
+            fechaReprogramada: "",
+          })
+        );
+
+        setActividadesRegulares(actBase);
+      }
+
+      const respuestasQuery = query(
+        collection(db, "respuestasEventos"),
+        where("tecnicoId", "==", userId)
+      );
+
+      const respuestasSnap = await getDocs(respuestasQuery);
+      const respuestasData = respuestasSnap.docs.map((d) => d.data());
+      const eventosIds = respuestasData.map((r) => r.eventoId);
+
+      if (eventosIds.length > 0) {
+        const eventosSnap = await getDocs(collection(db, "eventosGlobales"));
+        const todosEventos = eventosSnap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        }));
+
+        const comunidadesSnap = await getDocs(collection(db, "comunidades"));
+        const todasComunidades = new Map(
+          comunidadesSnap.docs.map((d) => [d.id, d.data().nombre])
+        );
+
+        const eventosDelTecnico = todosEventos.filter((e) =>
+          eventosIds.includes(e.id)
+        );
+
+        const reunionesBase: SeguimientoReunion[] = [];
+        const encuentrosBase: SeguimientoEncuentro[] = [];
+
+        for (const evento of eventosDelTecnico) {
+          const respuestaData = respuestasData.find((r) => r.eventoId === evento.id);
+
+          if (evento.tipoEvento === "tecnicos") {
+            reunionesBase.push({
+              eventoId: evento.id,
+              eventoTitulo: evento.titulo,
+              fecha: normalizarFecha(evento.fecha),
+              horario: evento.horario,
+              lugar: evento.lugar,
+              objetivo: evento.objetivo,
+              confirmado: respuestaData?.confirmado || false,
+              ejecutado: false,
+              estado: "realizada",
+              observaciones: "",
+            });
+          } else {
+            const comunidadesConfirmadas = Object.entries(
+              respuestaData?.respuestas || {}
+            ).map(([comId, respuesta]: [string, any]) => ({
+              comunidadId: comId,
+              comunidadNombre:
+                todasComunidades.get(comId) || respuesta.comunidadNombre || comId,
+              participa: respuesta.participa,
+            }));
+
+            encuentrosBase.push({
+              eventoId: evento.id,
+              eventoTitulo: evento.titulo,
+              tipoEvento: evento.tipoEvento,
+              fecha: normalizarFecha(evento.fecha),
+              horario: evento.horario,
+              lugar: evento.lugar,
+              objetivo: evento.objetivo,
+              confirmado: true,
+              comunidadesConfirmadas,
+              ejecutado: false,
+              estado: "realizada",
+              comunidadesEjecutadas: comunidadesConfirmadas
+                .filter((c) => c.participa === "si")
+                .map((c) => ({
+                  comunidadId: c.comunidadId,
+                  comunidadNombre: c.comunidadNombre,
+                  actividadRealizada: "",
+                  asistentesIds: [],
+                  porcentajeAsistencia: 0,
+                  evidenciasFotos: [],
+                  observaciones: "",
+                })),
+            });
+          }
+        }
+
+        setReuniones(reunionesBase);
+        setEncuentros(encuentrosBase);
+      }
+    } catch (err) {
+      console.error("Error al crear seguimiento inicial:", err);
+    }
+  }, []);
+
   const cargar = useCallback(async () => {
     if (!userId) return;
 
@@ -158,7 +290,6 @@ function useCargarDatos(userId: string | undefined) {
       setLoading(true);
       setError(null);
 
-      // 1️⃣ Cargar semana activa
       const semana = await getSemanaActiva();
       if (!semana) {
         setError("No hay semana activa");
@@ -166,7 +297,6 @@ function useCargarDatos(userId: string | undefined) {
       }
       setSemanaActiva(semana);
 
-      // 2️⃣ Cargar seguimiento existente
       const segQuery = query(
         collection(db, "seguimientos"),
         where("semanaId", "==", semana.id),
@@ -177,15 +307,32 @@ function useCargarDatos(userId: string | undefined) {
 
       if (!segSnap.empty) {
         const segData = segSnap.docs[0].data() as Seguimiento;
-        setActividadesRegulares(segData.actividadesRegulares || []);
-        setReuniones(segData.reuniones || []);
-        setEncuentros(segData.encuentros || []);
+
+        setActividadesRegulares(
+          (segData.actividadesRegulares || []).map((a) => ({
+            ...a,
+            fecha: normalizarFecha(a.fecha),
+            fechaReprogramada: normalizarFecha(a.fechaReprogramada),
+          }))
+        );
+
+        setReuniones(
+          (segData.reuniones || []).map((r) => ({
+            ...r,
+            fecha: normalizarFecha(r.fecha),
+          }))
+        );
+
+        setEncuentros(
+          (segData.encuentros || []).map((e) => ({
+            ...e,
+            fecha: normalizarFecha(e.fecha),
+          }))
+        );
       } else {
-        // 3️⃣ Si no existe, crear desde Planificación y Respuestas de Eventos
         await crearSeguimientoInicial(semana.id, userId);
       }
 
-      // 4️⃣ Cargar alertas
       const alertasQuery = query(
         collection(db, "alertas"),
         where("tecnicoId", "==", userId),
@@ -205,146 +352,7 @@ function useCargarDatos(userId: string | undefined) {
     } finally {
       setLoading(false);
     }
-  }, [userId]);
-
-const crearSeguimientoInicial = async (semanaId: string, userId: string) => {
-    try {
-      // 📋 Obtener planificación enviada
-      const planQuery = query(
-        collection(db, "planificaciones"),
-        where("semanaId", "==", semanaId),
-        where("tecnicoId", "==", userId),
-        where("estado", "==", "enviado")
-      );
-
-      const planSnap = await getDocs(planQuery);
-
-      if (!planSnap.empty) {
-        const planData = planSnap.docs[0].data();
-        
-        // Crear actividades regulares base
-        const actBase: ActividadRegular[] = (planData.actividades || []).map(
-          (act: any) => ({
-            comunidadId: act.comunidadId,
-            comunidadNombre: act.comunidadNombre,
-            actividadPlanificada: act.actividad,
-            actividadRealizada: "",
-            tipoEjecucionActividad: "planificada",
-            motivoCambioActividad: "",
-            asistentesIds: [],
-            porcentajeAsistencia: 0,
-            evidenciasFotos: [],
-            evidenciaListaPdf: "",
-            fecha: act.fecha || "",
-            estadoActividad: "realizada",
-            motivoNoRealizada: "",
-            fechaReprogramada: "",
-          })
-        );
-
-        setActividadesRegulares(actBase);
-      }
-
-      // 🔔 Obtener eventos globales confirmados
-      const respuestasQuery = query(
-        collection(db, "respuestasEventos"),
-        where("tecnicoId", "==", userId)
-      );
-
-      const respuestasSnap = await getDocs(respuestasQuery);
-      const respuestasData = respuestasSnap.docs.map((d) => d.data());
-      const eventosIds = respuestasData.map((r) => r.eventoId);
-
-      if (eventosIds.length > 0) {
-        // Obtener todos los eventos
-        const eventosSnap = await getDocs(
-          collection(db, "eventosGlobales")
-        );
-        
-        const todosEventos = eventosSnap.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        }));
-
-        // Obtener todas las comunidades para mapear nombres
-        const comunidadesSnap = await getDocs(
-          collection(db, "comunidades")
-        );
-        const todasComunidades = new Map(
-          comunidadesSnap.docs.map((d) => [d.id, d.data().nombre])
-        );
-
-        const eventosDelTecnico = todosEventos.filter((e) =>
-          eventosIds.includes(e.id)
-        );
-
-        // Separar en reuniones y encuentros
-        const reunionesBase: SeguimientoReunion[] = [];
-        const encuentrosBase: SeguimientoEncuentro[] = [];
-
-        for (const evento of eventosDelTecnico) {
-          const respuestaData = respuestasData.find(
-            (r) => r.eventoId === evento.id
-          );
-
-          if (evento.tipoEvento === "tecnicos") {
-            // 🟢 REUNIÓN
-            reunionesBase.push({
-              eventoId: evento.id,
-              eventoTitulo: evento.titulo,
-              fecha: evento.fecha,
-              horario: evento.horario,
-              lugar: evento.lugar,
-              objetivo: evento.objetivo,
-              confirmado: respuestaData?.confirmado || false,
-              ejecutado: false,
-              estado: "realizada",
-              observaciones: "",
-            });
-          } else {
-            // 🟠 ENCUENTRO (clubes, promotores, liderazgo)
-            const comunidadesConfirmadas = Object.entries(
-              respuestaData?.respuestas || {}
-            ).map(([comId, respuesta]: [string, any]) => ({
-              comunidadId: comId,
-              comunidadNombre: todasComunidades.get(comId) || respuesta.comunidadNombre || comId, // ✅ OBTENER DEL MAP
-              participa: respuesta.participa,
-            }));
-
-            encuentrosBase.push({
-              eventoId: evento.id,
-              eventoTitulo: evento.titulo,
-              tipoEvento: evento.tipoEvento,
-              fecha: evento.fecha,
-              horario: evento.horario,
-              lugar: evento.lugar,
-              objetivo: evento.objetivo,
-              confirmado: true,
-              comunidadesConfirmadas,
-              ejecutado: false,
-              estado: "realizada",
-              comunidadesEjecutadas: comunidadesConfirmadas
-                .filter((c) => c.participa === "si")
-                .map((c) => ({
-                  comunidadId: c.comunidadId,
-                  comunidadNombre: c.comunidadNombre, // ✅ AHORA TIENE EL NOMBRE CORRECTO
-                  actividadRealizada: "",
-                  asistentesIds: [],
-                  porcentajeAsistencia: 0,
-                  evidenciasFotos: [],
-                  observaciones: "",
-                })),
-            });
-          }
-        }
-
-        setReuniones(reunionesBase);
-        setEncuentros(encuentrosBase);
-      }
-    } catch (err) {
-      console.error("Error al crear seguimiento inicial:", err);
-    }
-  };
+  }, [userId, crearSeguimientoInicial]);
 
   useEffect(() => {
     cargar();
@@ -446,9 +454,19 @@ function useSeguimiento(userId: string | undefined, semanaId: string | undefined
         const data: Seguimiento = {
           semanaId,
           tecnicoId: userId,
-          actividadesRegulares,
-          reuniones,
-          encuentros,
+          actividadesRegulares: actividadesRegulares.map((a) => ({
+            ...a,
+            fecha: normalizarFecha(a.fecha),
+            fechaReprogramada: normalizarFecha(a.fechaReprogramada),
+          })),
+          reuniones: reuniones.map((r) => ({
+            ...r,
+            fecha: normalizarFecha(r.fecha),
+          })),
+          encuentros: encuentros.map((e) => ({
+            ...e,
+            fecha: normalizarFecha(e.fecha),
+          })),
           estado: nuevoEstado,
           fechaActualizacion: serverTimestamp(),
         };
@@ -626,11 +644,26 @@ function RegistroActividadRegular({
         </span>
       </div>
 
-      {/* Grid de información */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-gray-50 p-4 rounded">
         <div>
-          <p className="text-xs text-gray-600 uppercase font-semibold">Fecha</p>
-          <p className="font-medium text-gray-900">{actividad.fecha || "No definida"}</p>
+          <label className="block text-xs text-gray-600 uppercase font-semibold mb-1">
+            Fecha
+          </label>
+          {bloqueado ? (
+            <p className="font-medium text-gray-900">{actividad.fecha || "No definida"}</p>
+          ) : (
+            <input
+              type="date"
+              value={actividad.fecha || ""}
+              onChange={(e) =>
+                onActividadChange(index, {
+                  ...actividad,
+                  fecha: e.target.value,
+                })
+              }
+              className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
+            />
+          )}
         </div>
         <div>
           <p className="text-xs text-gray-600 uppercase font-semibold">Asistencia</p>
@@ -638,7 +671,6 @@ function RegistroActividadRegular({
         </div>
       </div>
 
-      {/* Actividad realizada */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">
           Actividad Realizada
@@ -658,7 +690,6 @@ function RegistroActividadRegular({
         />
       </div>
 
-      {/* Tipo de ejecución */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">
           Tipo de Ejecución
@@ -700,7 +731,6 @@ function RegistroActividadRegular({
         </div>
       )}
 
-      {/* Estado de la actividad */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">
           Estado
@@ -764,7 +794,6 @@ function RegistroActividadRegular({
         </div>
       )}
 
-      {/* Participantes */}
       {actividad.estadoActividad === "realizada" && (
         <>
           <button
@@ -856,9 +885,7 @@ function RegistroActividadRegular({
                 )}
               </div>
 
-              {/* Evidencias */}
               <div className="pt-4 border-t border-gray-300 space-y-4">
-                {/* Fotos */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     📷 Fotos
@@ -900,7 +927,6 @@ function RegistroActividadRegular({
                   )}
                 </div>
 
-                {/* PDF */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     📄 Lista de Asistencia
@@ -991,7 +1017,6 @@ function RegistroReunion({
         </span>
       </div>
 
-      {/* Información general */}
       <div className="bg-blue-50 p-4 rounded border border-blue-200">
         <p className="text-sm text-gray-700">
           <strong>Confirmado:</strong> {reunion.confirmado ? "✅ Sí" : "❌ No"}
@@ -1001,7 +1026,6 @@ function RegistroReunion({
         </p>
       </div>
 
-      {/* Estado de ejecución */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">
           Estado de Ejecución
@@ -1069,7 +1093,7 @@ function RegistroReunion({
   );
 }
 
-// ============ COMPONENTE: Registro Encuentro (VERSIÓN CORREGIDA) ============
+// ============ COMPONENTE: Registro Encuentro ============
 interface RegistroEncuentroProps {
   encuentro: SeguimientoEncuentro;
   index: number;
@@ -1125,7 +1149,6 @@ function RegistroEncuentro({
         </span>
       </div>
 
-      {/* Información general */}
       <div className="bg-blue-50 p-4 rounded border border-blue-200">
         <p className="text-sm text-gray-700">
           <strong>Tipo:</strong> {encuentro.tipoEvento}
@@ -1135,7 +1158,6 @@ function RegistroEncuentro({
         </p>
       </div>
 
-      {/* Estado de ejecución */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">
           Estado de Ejecución
@@ -1179,7 +1201,6 @@ function RegistroEncuentro({
         </div>
       )}
 
-      {/* Comunidades confirmadas */}
       {encuentro.estado === "realizada" && encuentro.comunidadesConfirmadas.length > 0 && (
         <div className="space-y-4">
           <h4 className="font-bold text-gray-900">Comunidades Participantes</h4>
@@ -1199,12 +1220,10 @@ function RegistroEncuentro({
                 observaciones: "",
               };
 
-              // Índice real del array comunidadesEjecutadas
               const indexEj = encuentro.comunidadesEjecutadas.findIndex(
                 (e) => e.comunidadId === comunidad.comunidadId
               );
 
-              // Participantes de esta comunidad
               const participantesComunidad =
                 participantesCargados[comIdx] ||
                 participantes.filter((p) => p.comunidadId === comunidad.comunidadId);
@@ -1221,11 +1240,8 @@ function RegistroEncuentro({
                     <button
                       onClick={() => {
                         const nueva = new Set(expandidas);
-                        if (nueva.has(comIdx)) {
-                          nueva.delete(comIdx);
-                        } else {
-                          nueva.add(comIdx);
-                        }
+                        if (nueva.has(comIdx)) nueva.delete(comIdx);
+                        else nueva.add(comIdx);
                         setExpandidas(nueva);
                       }}
                       className="text-sm text-blue-600 hover:text-blue-700 font-medium"
@@ -1236,7 +1252,6 @@ function RegistroEncuentro({
 
                   {expandidas.has(comIdx) && (
                     <div className="space-y-3 ml-4 bg-white p-3 rounded">
-                      {/* Actividad realizada */}
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">
                           Actividad Realizada
@@ -1247,7 +1262,7 @@ function RegistroEncuentro({
                           value={ej.actividadRealizada}
                           onChange={(e) => {
                             const nuevosEj = [...encuentro.comunidadesEjecutadas];
-                            
+
                             if (indexEj >= 0) {
                               nuevosEj[indexEj] = {
                                 ...nuevosEj[indexEj],
@@ -1259,7 +1274,7 @@ function RegistroEncuentro({
                                 actividadRealizada: e.target.value,
                               });
                             }
-                            
+
                             onEncuentroChange(index, {
                               ...encuentro,
                               comunidadesEjecutadas: nuevosEj,
@@ -1270,7 +1285,6 @@ function RegistroEncuentro({
                         />
                       </div>
 
-                      {/* Observaciones */}
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">
                           Observaciones
@@ -1280,7 +1294,7 @@ function RegistroEncuentro({
                           value={ej.observaciones}
                           onChange={(e) => {
                             const nuevosEj = [...encuentro.comunidadesEjecutadas];
-                            
+
                             if (indexEj >= 0) {
                               nuevosEj[indexEj] = {
                                 ...nuevosEj[indexEj],
@@ -1292,7 +1306,7 @@ function RegistroEncuentro({
                                 observaciones: e.target.value,
                               });
                             }
-                            
+
                             onEncuentroChange(index, {
                               ...encuentro,
                               comunidadesEjecutadas: nuevosEj,
@@ -1304,12 +1318,10 @@ function RegistroEncuentro({
                         />
                       </div>
 
-                      {/* Botón cargar participantes */}
                       <button
                         onClick={async () => {
                           await onCargarParticipantes(index, comunidad.comunidadId);
-                          
-                          // Cargar participantes de esta comunidad
+
                           try {
                             const q = query(
                               collection(db, "participantes"),
@@ -1338,7 +1350,6 @@ function RegistroEncuentro({
                         👥 Cargar Participantes ({participantesComunidad.length})
                       </button>
 
-                      {/* Lista de asistencia */}
                       {participantesComunidad.length > 0 && (
                         <div className="space-y-2 bg-white p-3 rounded border border-gray-300">
                           <div>
@@ -1394,7 +1405,6 @@ function RegistroEncuentro({
                                         ejActualizado.asistentesIds.push(participante.id);
                                       }
 
-                                      // Calcular porcentaje
                                       ejActualizado.porcentajeAsistencia =
                                         participantesComunidad.length > 0
                                           ? Math.round(
@@ -1438,7 +1448,6 @@ function RegistroEncuentro({
                         </div>
                       )}
 
-                      {/* Fotos */}
                       <div className="pt-3 border-t border-gray-300">
                         <label className="block text-sm font-medium text-gray-700 mb-2">
                           📷 Fotos
@@ -1543,7 +1552,6 @@ export default function SeguimientoPage() {
     Record<string, Participante[]>
   >({});
 
-  // MANEJADORES ACTIVIDADES REGULARES
   const handleActividadChange = useCallback(
     (index: number, actividad: ActividadRegular) => {
       const nuevas = [...actividadesRegulares];
@@ -1679,7 +1687,6 @@ export default function SeguimientoPage() {
     [actividadesRegulares, bloqueado, setActividadesRegulares]
   );
 
-  // MANEJADORES REUNIONES
   const handleReunionChange = useCallback(
     (index: number, reunion: SeguimientoReunion) => {
       const nuevas = [...reuniones];
@@ -1689,7 +1696,6 @@ export default function SeguimientoPage() {
     [reuniones, setReuniones]
   );
 
-  // MANEJADORES ENCUENTROS
   const handleEncuentroChange = useCallback(
     (index: number, encuentro: SeguimientoEncuentro) => {
       const nuevos = [...encuentros];
@@ -1742,7 +1748,6 @@ export default function SeguimientoPage() {
         ej.asistentesIds.push(participanteId);
       }
 
-      // Calcular porcentaje
       const comunidad = encuentro.comunidadesConfirmadas[comIdx];
       const participantesCom = (
         participantesPorActividad[`encuentro_${eventoIdx}_${comunidad.comunidadId}`] || []
@@ -1795,18 +1800,34 @@ export default function SeguimientoPage() {
     [encuentros, bloqueado, setEncuentros, eliminarArchivo]
   );
 
-  // GUARDAR SEGUIMIENTO
   const handleGuardarSeguimiento = useCallback(
     async (estado: "borrador" | "enviado") => {
       if (estado === "enviado") {
+        const actividadesInvalidas = actividadesRegulares.filter(
+          (a) => a.estadoActividad === "realizada" && !normalizarFecha(a.fecha)
+        );
+
+        if (actividadesInvalidas.length > 0) {
+          alert(
+            "Hay actividades realizadas sin fecha válida. Debes corregirlas antes de enviar el seguimiento."
+          );
+          return;
+        }
+
         const confirmar = confirm(
           "¿Enviar seguimiento? No podrá realizar cambios después."
         );
         if (!confirmar) return;
       }
 
+      const actividadesNormalizadas = actividadesRegulares.map((a) => ({
+        ...a,
+        fecha: normalizarFecha(a.fecha),
+        fechaReprogramada: normalizarFecha(a.fechaReprogramada),
+      }));
+
       const exito = await guardarSeguimiento(
-        actividadesRegulares,
+        actividadesNormalizadas,
         reuniones,
         encuentros,
         estado
@@ -1825,473 +1846,30 @@ export default function SeguimientoPage() {
     [actividadesRegulares, reuniones, encuentros, guardarSeguimiento]
   );
 
-  // GENERAR PDF
   const handleGenerarPDF = useCallback(() => {
     if (!semanaActiva || !user) return;
 
-    const doc = new jsPDF();
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
+    const pdf = new jsPDF();
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    let y = 20;
 
-    let yPosition = 15;
-
-    // Encabezado
-    doc.setFillColor(76, 175, 80);
-    doc.rect(15, 10, 8, 8, "F");
-    doc.setFontSize(10);
-    doc.setTextColor(76, 175, 80);
-    doc.text("GAD Montecristi", 25, 15);
-
-    yPosition = 28;
-    doc.setFontSize(14);
-    doc.setTextColor(0, 0, 0);
-    doc.setFont("helvetica", "bold");
-    doc.text("SEGUIMIENTO SEMANAL INTEGRAL", pageWidth / 2, yPosition, {
+    pdf.setFontSize(16);
+    pdf.text("SEGUIMIENTO SEMANAL INTEGRAL", pageWidth / 2, y, {
       align: "center",
     });
 
-    // Información general
-    yPosition = 38;
-    const infoData = [
-      ["Proyecto:", "Montecristi Crece en Valores"],
-      ["Semana:", `${semanaActiva.fechaInicio} - ${semanaActiva.fechaFin}`],
-      ["Técnico:", user.displayName || "Técnico"],
-    ];
+    y += 10;
 
-    autoTable(doc, {
-      startY: yPosition,
-      head: [],
-      body: infoData,
-      columnStyles: {
-        0: {
-          cellWidth: 40,
-          fontStyle: "bold",
-          fillColor: [76, 175, 80],
-          textColor: [255, 255, 255],
-        },
-        1: { cellWidth: pageWidth - 70 },
-      },
-      margin: { left: 15, right: 15 },
+    autoTable(pdf, {
+      startY: y,
+      body: [
+        ["Semana", `${semanaActiva.fechaInicio} - ${semanaActiva.fechaFin}`],
+        ["Técnico", user.displayName || "Técnico"],
+      ],
     });
 
-    yPosition = (doc as any).lastAutoTable.finalY + 10;
-
-    // ============ SECCIÓN: ACTIVIDADES REGULARES ============
-    if (actividadesRegulares.length > 0) {
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(12);
-      doc.setTextColor(76, 175, 80);
-      doc.text("📋 ACTIVIDADES REGULARES", 15, yPosition);
-
-      yPosition += 8;
-
-      const actividadesTableData = actividadesRegulares.map((act, idx) => [
-        String(idx + 1),
-        act.comunidadNombre,
-        act.actividadPlanificada.substring(0, 25) + "...",
-        act.actividadRealizada || "-",
-        act.fecha || "-",
-        act.porcentajeAsistencia + "%",
-        act.estadoActividad,
-      ]);
-
-      autoTable(doc, {
-        startY: yPosition,
-        head: [
-          [
-            "N°",
-            "Comunidad",
-            "Actividad Planificada",
-            "Ejecutada",
-            "Fecha",
-            "% Asistencia",
-            "Estado",
-          ],
-        ],
-        body: actividadesTableData,
-        headStyles: {
-          fillColor: [76, 175, 80],
-          textColor: [255, 255, 255],
-          fontStyle: "bold",
-          fontSize: 9,
-        },
-        bodyStyles: {
-          fontSize: 8,
-        },
-        columnStyles: {
-          0: { cellWidth: 8 },
-          1: { cellWidth: 25, halign: "left" },
-          2: { cellWidth: 30, halign: "left" },
-          3: { cellWidth: 30, halign: "left" },
-          4: { cellWidth: 15 },
-          5: { cellWidth: 15 },
-          6: { cellWidth: 15 },
-        },
-        margin: { left: 15, right: 15 },
-      });
-
-      yPosition = (doc as any).lastAutoTable.finalY + 10;
-    }
-
-    // ============ SECCIÓN: REUNIONES ============
-    if (reuniones.length > 0) {
-      if (yPosition > pageHeight - 60) {
-        doc.addPage();
-        yPosition = 15;
-      }
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(12);
-      doc.setTextColor(255, 193, 7);
-      doc.text("📋 REUNIONES DE TÉCNICOS", 15, yPosition);
-
-      yPosition += 8;
-
-      const reunionesTableData = reuniones.map((r, idx) => [
-        String(idx + 1),
-        r.eventoTitulo.substring(0, 25) + "...",
-        new Date(r.fecha).toLocaleDateString("es-ES"),
-        r.confirmado ? "✓ Confirmado" : "✗ No confirmado",
-        r.estado,
-      ]);
-
-      autoTable(doc, {
-        startY: yPosition,
-        head: [["N°", "Reunión", "Fecha", "Confirmación", "Estado"]],
-        body: reunionesTableData,
-        headStyles: {
-          fillColor: [255, 193, 7],
-          textColor: [0, 0, 0],
-          fontStyle: "bold",
-          fontSize: 9,
-        },
-        bodyStyles: {
-          fontSize: 8,
-        },
-        columnStyles: {
-          0: { cellWidth: 8 },
-          1: { cellWidth: 40, halign: "left" },
-          2: { cellWidth: 25 },
-          3: { cellWidth: 25 },
-          4: { cellWidth: 22 },
-        },
-        margin: { left: 15, right: 15 },
-      });
-
-      yPosition = (doc as any).lastAutoTable.finalY + 10;
-
-      // Detalle de reuniones
-      reuniones.forEach((reunion, reunionIdx) => {
-        if (yPosition > pageHeight - 40) {
-          doc.addPage();
-          yPosition = 15;
-        }
-
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(11);
-        doc.setTextColor(255, 193, 7);
-        doc.text(`📌 ${reunion.eventoTitulo}`, 15, yPosition);
-
-        yPosition += 6;
-
-        const detalleData = [
-          ["Fecha:", new Date(reunion.fecha).toLocaleDateString("es-ES")],
-          ["Horario:", reunion.horario],
-          ["Lugar:", reunion.lugar],
-          ["Confirmado:", reunion.confirmado ? "Sí" : "No"],
-          ["Estado:", reunion.estado],
-          ["Observaciones:", reunion.observaciones || "-"],
-        ];
-
-        autoTable(doc, {
-          startY: yPosition,
-          head: [],
-          body: detalleData,
-          columnStyles: {
-            0: {
-              cellWidth: 30,
-              fontStyle: "bold",
-              fillColor: [240, 240, 240],
-            },
-            1: { cellWidth: pageWidth - 60 },
-          },
-          margin: { left: 15, right: 15 },
-        });
-
-        yPosition = (doc as any).lastAutoTable.finalY + 8;
-
-        // Separador
-        doc.setDrawColor(200, 200, 200);
-        doc.line(15, yPosition, pageWidth - 15, yPosition);
-        yPosition += 4;
-      });
-    }
-
-    // ============ SECCIÓN: ENCUENTROS ============
-    if (encuentros.length > 0) {
-      if (yPosition > pageHeight - 60) {
-        doc.addPage();
-        yPosition = 15;
-      }
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(12);
-      doc.setTextColor(255, 127, 14);
-      doc.text("📅 ENCUENTROS COMUNITARIOS", 15, yPosition);
-
-      yPosition += 8;
-
-      const encuentrosTableData = encuentros.map((e, idx) => [
-        String(idx + 1),
-        e.eventoTitulo.substring(0, 20) + "...",
-        e.tipoEvento,
-        new Date(e.fecha).toLocaleDateString("es-ES"),
-        e.estado,
-        e.comunidadesConfirmadas.filter((c) => c.participa === "si").length,
-      ]);
-
-      autoTable(doc, {
-        startY: yPosition,
-        head: [
-          [
-            "N°",
-            "Evento",
-            "Tipo",
-            "Fecha",
-            "Estado",
-            "Comunidades",
-          ],
-        ],
-        body: encuentrosTableData,
-        headStyles: {
-          fillColor: [255, 127, 14],
-          textColor: [255, 255, 255],
-          fontStyle: "bold",
-          fontSize: 9,
-        },
-        bodyStyles: {
-          fontSize: 8,
-        },
-        columnStyles: {
-          0: { cellWidth: 8 },
-          1: { cellWidth: 35, halign: "left" },
-          2: { cellWidth: 25, halign: "left" },
-          3: { cellWidth: 20 },
-          4: { cellWidth: 20 },
-          5: { cellWidth: 20 },
-        },
-        margin: { left: 15, right: 15 },
-      });
-
-      yPosition = (doc as any).lastAutoTable.finalY + 10;
-
-      // Detalle de encuentros por comunidad
-      encuentros.forEach((evento, eventoIdx) => {
-        if (yPosition > pageHeight - 40) {
-          doc.addPage();
-          yPosition = 15;
-        }
-
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(11);
-        doc.setTextColor(255, 127, 14);
-        doc.text(`📌 ${evento.eventoTitulo}`, 15, yPosition);
-
-        yPosition += 6;
-
-        const eventoDetalleData = [
-          ["Tipo:", evento.tipoEvento],
-          ["Fecha:", new Date(evento.fecha).toLocaleDateString("es-ES")],
-          ["Horario:", evento.horario],
-          ["Lugar:", evento.lugar],
-          ["Estado Ejecución:", evento.estado],
-        ];
-
-        if (evento.motivoNoEjecucion) {
-          eventoDetalleData.push(["Motivo:", evento.motivoNoEjecucion]);
-        }
-
-        autoTable(doc, {
-          startY: yPosition,
-          head: [],
-          body: eventoDetalleData,
-          columnStyles: {
-            0: {
-              cellWidth: 30,
-              fontStyle: "bold",
-              fillColor: [240, 240, 240],
-            },
-            1: { cellWidth: pageWidth - 60 },
-          },
-          margin: { left: 15, right: 15 },
-        });
-
-        yPosition = (doc as any).lastAutoTable.finalY + 6;
-
-        // Detalle por comunidad del evento
-        if (evento.comunidadesEjecutadas.length > 0) {
-          doc.setFont("helvetica", "bold");
-          doc.setFontSize(10);
-          doc.setTextColor(0, 0, 0);
-          doc.text("Comunidades Ejecutadas:", 15, yPosition);
-
-          yPosition += 5;
-
-          const comEjecTableData = evento.comunidadesEjecutadas.map((com) => [
-            com.comunidadNombre,
-            com.actividadRealizada || "-",
-            com.porcentajeAsistencia + "%",
-            com.asistentesIds.length,
-            com.evidenciasFotos.length > 0 ? "✓" : "-",
-          ]);
-
-          autoTable(doc, {
-            startY: yPosition,
-            head: [["Comunidad", "Actividad", "% Asistencia", "Participantes", "Fotos"]],
-            body: comEjecTableData,
-            headStyles: {
-              fillColor: [220, 220, 220],
-              textColor: [0, 0, 0],
-              fontStyle: "bold",
-              fontSize: 8,
-            },
-            bodyStyles: {
-              fontSize: 8,
-            },
-            columnStyles: {
-              0: { cellWidth: 30, halign: "left" },
-              1: { cellWidth: 40, halign: "left" },
-              2: { cellWidth: 18 },
-              3: { cellWidth: 18 },
-              4: { cellWidth: 14 },
-            },
-            margin: { left: 15, right: 15 },
-          });
-
-          yPosition = (doc as any).lastAutoTable.finalY + 8;
-        }
-
-        // Separador
-        doc.setDrawColor(200, 200, 200);
-        doc.line(15, yPosition, pageWidth - 15, yPosition);
-        yPosition += 4;
-      });
-    }
-
-    // ============ RESUMEN GENERAL ============
-    if (yPosition > pageHeight - 40) {
-      doc.addPage();
-      yPosition = 15;
-    }
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(12);
-    doc.setTextColor(76, 175, 80);
-    doc.text("📊 RESUMEN GENERAL", 15, yPosition);
-
-    yPosition += 8;
-
-    const resumenData = [
-      [
-        "Total Actividades Planificadas:",
-        String(actividadesRegulares.length),
-      ],
-      [
-        "Actividades Realizadas:",
-        String(
-          actividadesRegulares.filter((a) => a.estadoActividad === "realizada")
-            .length
-        ),
-      ],
-      [
-        "Promedio Asistencia Actividades:",
-        String(
-          Math.round(
-            actividadesRegulares.reduce(
-              (acc, a) => acc + a.porcentajeAsistencia,
-              0
-            ) / Math.max(actividadesRegulares.length, 1)
-          )
-        ) + "%",
-      ],
-      ["Total Reuniones:", String(reuniones.length)],
-      [
-        "Reuniones Realizadas:",
-        String(reuniones.filter((r) => r.estado === "realizada").length),
-      ],
-      ["Total Encuentros:", String(encuentros.length)],
-      [
-        "Encuentros Realizados:",
-        String(encuentros.filter((e) => e.estado === "realizada").length),
-      ],
-      [
-        "Promedio Asistencia Encuentros:",
-        String(
-          Math.round(
-            encuentros
-              .flatMap((e) => e.comunidadesEjecutadas)
-              .reduce((acc, c) => acc + c.porcentajeAsistencia, 0) /
-              Math.max(
-                encuentros.flatMap((e) => e.comunidadesEjecutadas).length,
-                1
-              )
-          )
-        ) + "%",
-      ],
-    ];
-
-    autoTable(doc, {
-      startY: yPosition,
-      head: [],
-      body: resumenData,
-      columnStyles: {
-        0: {
-          cellWidth: 60,
-          fontStyle: "bold",
-          fillColor: [240, 240, 240],
-        },
-        1: {
-          cellWidth: pageWidth - 90,
-          fontStyle: "bold",
-          fillColor: [76, 175, 80],
-          textColor: [255, 255, 255],
-          halign: "center",
-        },
-      },
-      margin: { left: 15, right: 15 },
-    });
-
-    // ============ PIE DE PÁGINA ============
-    const paginasTotal = doc.getNumberOfPages();
-
-    for (let i = 1; i <= paginasTotal; i++) {
-      doc.setPage(i);
-
-      doc.setDrawColor(76, 175, 80);
-      doc.setLineWidth(0.5);
-      doc.line(15, pageHeight - 15, pageWidth - 15, pageHeight - 15);
-
-      doc.setFontSize(8);
-      doc.setTextColor(100, 100, 100);
-      doc.text(
-        "Montecristi Crece en Valores - Seguimiento Integral",
-        15,
-        pageHeight - 10
-      );
-      doc.text(`Página ${i} de ${paginasTotal}`, pageWidth - 35, pageHeight - 10);
-      doc.text(
-        `Generado: ${new Date().toLocaleDateString("es-ES")}`,
-        pageWidth / 2,
-        pageHeight - 10,
-        { align: "center" }
-      );
-    }
-
-    const nombreArchivo = `Seguimiento_${semanaActiva.fechaInicio}_${semanaActiva.fechaFin}.pdf`;
-    doc.save(nombreArchivo);
-  }, [semanaActiva, user, actividadesRegulares, reuniones, encuentros]);
-
-  // ============ RENDER ============
+    pdf.save(`Seguimiento_${semanaActiva.fechaInicio}_${semanaActiva.fechaFin}.pdf`);
+  }, [semanaActiva, user]);
 
   if (loading) {
     return (
@@ -2315,7 +1893,6 @@ export default function SeguimientoPage() {
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-6xl mx-auto space-y-6">
-        {/* Encabezado */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold text-gray-900">
@@ -2338,7 +1915,6 @@ export default function SeguimientoPage() {
           </span>
         </div>
 
-        {/* Alertas de eventos */}
         {alertas.length > 0 && (
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
             <p className="text-blue-800 font-medium">
@@ -2347,9 +1923,7 @@ export default function SeguimientoPage() {
           </div>
         )}
 
-        {/* Tabs para secciones */}
         <div className="space-y-6">
-          {/* SECCIÓN: ACTIVIDADES REGULARES */}
           {actividadesRegulares.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-4">
@@ -2382,7 +1956,6 @@ export default function SeguimientoPage() {
             </div>
           )}
 
-          {/* SECCIÓN: REUNIONES */}
           {reuniones.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-4">
@@ -2408,7 +1981,6 @@ export default function SeguimientoPage() {
             </div>
           )}
 
-          {/* SECCIÓN: ENCUENTROS */}
           {encuentros.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-4">
@@ -2450,7 +2022,6 @@ export default function SeguimientoPage() {
             )}
         </div>
 
-        {/* Botones de acción */}
         {!bloqueado &&
           (actividadesRegulares.length > 0 ||
             reuniones.length > 0 ||

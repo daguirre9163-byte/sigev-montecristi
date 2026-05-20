@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { db } from "@/lib/firebase";
 import {
   collection,
@@ -9,18 +9,13 @@ import {
   updateDoc,
   deleteDoc,
   doc,
-  query,
-  where,
 } from "firebase/firestore";
 import { getComunidadesByTecnico } from "@/lib/getComunidadesByTecnico";
 import { getSemanaActiva } from "@/lib/getSemanaActiva";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import * as XLSX from "xlsx";
-import { saveAs } from "file-saver";
-import Image from "next/image";
 
-// ============ TIPOS ============
+// ================== TIPOS ==================
 interface Usuario {
   id: string;
   nombre: string;
@@ -44,7 +39,7 @@ interface Participante {
   genero: "M" | "F" | "Otro";
   comunidadId: string;
   tecnicoId?: string;
-  estado: "activo" | "inactivo";
+  estado: "activo" | "inactivo" | "eliminado";
   fechaRegistro: string;
   [key: string]: any;
 }
@@ -100,6 +95,7 @@ interface ComparativaTecnico {
 }
 
 interface ComparativaComunidad {
+  comunidadId: string;
   comunidad: string;
   tecnico: string;
   participantes: number;
@@ -138,7 +134,28 @@ interface FormParticipante {
   estado: "activo" | "inactivo";
 }
 
-// ============ HOOK: Cargar datos principales ============
+// ================== UTILIDADES ==================
+function obtenerComunidadesDelTecnico(
+  tecnicoId: string,
+  comunidades: Comunidad[]
+): Comunidad[] {
+  return comunidades.filter((c) => c.tecnicoId === tecnicoId);
+}
+
+function obtenerIdsComunidadesDelTecnico(
+  tecnicoId: string,
+  comunidades: Comunidad[]
+): string[] {
+  return obtenerComunidadesDelTecnico(tecnicoId, comunidades).map((c) => c.id);
+}
+
+function getBadgeColor(valor: number) {
+  if (valor >= 90) return "bg-green-600";
+  if (valor >= 70) return "bg-yellow-500";
+  return "bg-red-600";
+}
+
+// ================== HOOK DATOS ==================
 function useDatosReportes() {
   const [data, setData] = useState({
     usuarios: [] as Usuario[],
@@ -152,11 +169,7 @@ function useDatosReportes() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    cargarDatos();
-  }, []);
-
-  const cargarDatos = async () => {
+  const cargarDatos = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -170,21 +183,18 @@ function useDatosReportes() {
           getDocs(collection(db, "participantes")),
         ]);
 
-      const usuariosMap = new Map();
-      const comunidadesMap = new Map();
+      const usuariosMap = new Map<string, Usuario>();
+      const comunidadesMap = new Map<string, Comunidad>();
 
       usuariosSnap.docs.forEach((d) => {
         usuariosMap.set(d.id, { id: d.id, ...d.data() } as Usuario);
       });
 
-      // Obtener comunidades únicas
       for (const usuario of usuariosMap.values()) {
         if (usuario.rol === "tecnico" || usuario.rol === "admin") {
           const coms = await getComunidadesByTecnico(usuario.id);
           coms.forEach((c) => {
-            if (!comunidadesMap.has(c.id)) {
-              comunidadesMap.set(c.id, { ...c, tecnicoId: usuario.id });
-            }
+            comunidadesMap.set(c.id, { ...c, tecnicoId: usuario.id });
           });
         }
       }
@@ -216,12 +226,16 @@ function useDatosReportes() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    cargarDatos();
+  }, [cargarDatos]);
 
   return { ...data, loading, error, recargar: cargarDatos };
 }
 
-// ============ COMPONENTE: Card KPI ============
+// ================== UI ==================
 function KPICard({
   titulo,
   valor,
@@ -234,97 +248,71 @@ function KPICard({
   color: string;
 }) {
   return (
-    <div className={`${color} rounded-lg p-6 text-white shadow-md`}>
+    <div className={`${color} rounded-2xl p-5 text-white shadow-sm`}>
       <div className="flex justify-between items-start">
         <div>
-          <p className="text-sm opacity-90 font-semibold">{titulo}</p>
+          <p className="text-sm opacity-90 font-medium">{titulo}</p>
           <h3 className="text-3xl font-bold mt-2">{valor}</h3>
         </div>
-        <span className="text-4xl">{icono}</span>
+        <span className="text-3xl">{icono}</span>
       </div>
     </div>
   );
 }
 
-// ============ COMPONENTE: Panel ============
 function Panel({
   titulo,
+  subtitle,
   children,
 }: {
   titulo: string;
+  subtitle?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="bg-white rounded-lg shadow-md p-6 space-y-4">
-      <h2 className="text-2xl font-bold text-gray-900">{titulo}</h2>
+    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-4">
+      <div>
+        <h2 className="text-2xl font-bold text-slate-900">{titulo}</h2>
+        {subtitle && <p className="text-sm text-slate-500 mt-1">{subtitle}</p>}
+      </div>
       {children}
     </div>
   );
 }
 
-// ============ COMPONENTE: Tabla Comparativa Técnicos ============
-interface TablaComparativaTecnicosProps {
-  tecnicos: ComparativaTecnico[];
-}
-
+// ================== TABLAS ==================
 function TablaComparativaTecnicos({
   tecnicos,
-}: TablaComparativaTecnicosProps) {
+}: {
+  tecnicos: ComparativaTecnico[];
+}) {
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto rounded-xl border border-slate-200">
       <table className="w-full">
-        <thead className="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
+        <thead className="bg-slate-100">
           <tr>
-            <th className="px-6 py-3 text-left font-semibold">Técnico</th>
-            <th className="px-6 py-3 text-center font-semibold">Comunidades</th>
-            <th className="px-6 py-3 text-center font-semibold">
-              Participantes
-            </th>
-            <th className="px-6 py-3 text-center font-semibold">Actividades</th>
-            <th className="px-6 py-3 text-center font-semibold">Cumplimiento</th>
-            <th className="px-6 py-3 text-center font-semibold">Asistencia</th>
+            <th className="px-6 py-3 text-left font-bold text-slate-800 text-sm">Técnico</th>
+            <th className="px-6 py-3 text-center font-bold text-slate-800 text-sm">Comunidades Actuales</th>
+            <th className="px-6 py-3 text-center font-bold text-slate-800 text-sm">Participantes Actuales</th>
+            <th className="px-6 py-3 text-center font-bold text-slate-800 text-sm">Actividades Históricas</th>
+            <th className="px-6 py-3 text-center font-bold text-slate-800 text-sm">Cumplimiento Histórico</th>
+            <th className="px-6 py-3 text-center font-bold text-slate-800 text-sm">Asistencia Histórica</th>
           </tr>
         </thead>
-        <tbody className="divide-y">
+        <tbody className="divide-y divide-slate-200">
           {tecnicos.map((tecnico) => (
-            <tr key={tecnico.tecnicoId} className="hover:bg-gray-50 transition">
-              <td className="px-6 py-4 font-semibold text-gray-900">
-                {tecnico.tecnico}
-              </td>
+            <tr key={tecnico.tecnicoId} className="hover:bg-slate-50 transition">
+              <td className="px-6 py-4 font-semibold text-slate-900">{tecnico.tecnico}</td>
+              <td className="px-6 py-4 text-center">{tecnico.comunidades}</td>
+              <td className="px-6 py-4 text-center">{tecnico.participantes}</td>
+              <td className="px-6 py-4 text-center">{tecnico.actividades}</td>
               <td className="px-6 py-4 text-center">
-                <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-semibold">
-                  {tecnico.comunidades}
-                </span>
-              </td>
-              <td className="px-6 py-4 text-center font-bold text-gray-900">
-                {tecnico.participantes}
-              </td>
-              <td className="px-6 py-4 text-center font-bold text-gray-900">
-                {tecnico.actividades}
-              </td>
-              <td className="px-6 py-4 text-center">
-                <span
-                  className={`px-3 py-1 rounded-full text-sm font-bold text-white ${
-                    tecnico.cumplimiento >= 90
-                      ? "bg-green-600"
-                      : tecnico.cumplimiento >= 70
-                      ? "bg-yellow-600"
-                      : "bg-red-600"
-                  }`}
-                >
+                <span className={`px-3 py-1 rounded-full text-xs font-bold text-white ${getBadgeColor(tecnico.cumplimiento)}`}>
                   {tecnico.cumplimiento}%
                 </span>
               </td>
               <td className="px-6 py-4 text-center">
-                <span
-                  className={`px-3 py-1 rounded-full text-sm font-bold text-white ${
-                    tecnico.asistencia >= 80
-                      ? "bg-green-600"
-                      : tecnico.asistencia >= 60
-                      ? "bg-yellow-600"
-                      : "bg-red-600"
-                  }`}
-                >
+                <span className={`px-3 py-1 rounded-full text-xs font-bold text-white ${getBadgeColor(tecnico.asistencia)}`}>
                   {tecnico.asistencia.toFixed(1)}%
                 </span>
               </td>
@@ -336,54 +324,35 @@ function TablaComparativaTecnicos({
   );
 }
 
-// ============ COMPONENTE: Tabla Comparativa Comunidades ============
-interface TablaComparativaComunidadesProps {
-  comunidades: ComparativaComunidad[];
-}
-
 function TablaComparativaComunidades({
   comunidades,
-}: TablaComparativaComunidadesProps) {
+}: {
+  comunidades: ComparativaComunidad[];
+}) {
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto rounded-xl border border-slate-200">
       <table className="w-full">
-        <thead className="bg-gradient-to-r from-green-600 to-green-700 text-white">
+        <thead className="bg-slate-100">
           <tr>
-            <th className="px-6 py-3 text-left font-semibold">Comunidad</th>
-            <th className="px-6 py-3 text-left font-semibold">Técnico</th>
-            <th className="px-6 py-3 text-center font-semibold">
-              Participantes
-            </th>
-            <th className="px-6 py-3 text-center font-semibold">Asistencia</th>
-            <th className="px-6 py-3 text-center font-semibold">Actividades</th>
+            <th className="px-6 py-3 text-left font-bold text-slate-800 text-sm">Comunidad</th>
+            <th className="px-6 py-3 text-left font-bold text-slate-800 text-sm">Técnico Actual</th>
+            <th className="px-6 py-3 text-center font-bold text-slate-800 text-sm">Participantes</th>
+            <th className="px-6 py-3 text-center font-bold text-slate-800 text-sm">Asistencia</th>
+            <th className="px-6 py-3 text-center font-bold text-slate-800 text-sm">Actividades</th>
           </tr>
         </thead>
-        <tbody className="divide-y">
-          {comunidades.map((comunidad, idx) => (
-            <tr key={idx} className="hover:bg-gray-50 transition">
-              <td className="px-6 py-4 font-semibold text-gray-900">
-                {comunidad.comunidad}
-              </td>
-              <td className="px-6 py-4 text-gray-600">{comunidad.tecnico}</td>
-              <td className="px-6 py-4 text-center font-bold text-gray-900">
-                {comunidad.participantes}
-              </td>
+        <tbody className="divide-y divide-slate-200">
+          {comunidades.map((comunidad) => (
+            <tr key={comunidad.comunidadId} className="hover:bg-slate-50 transition">
+              <td className="px-6 py-4 font-semibold text-slate-900">{comunidad.comunidad}</td>
+              <td className="px-6 py-4 text-slate-700">{comunidad.tecnico}</td>
+              <td className="px-6 py-4 text-center">{comunidad.participantes}</td>
               <td className="px-6 py-4 text-center">
-                <span
-                  className={`px-3 py-1 rounded-full text-sm font-bold text-white ${
-                    comunidad.asistencia >= 80
-                      ? "bg-green-600"
-                      : comunidad.asistencia >= 60
-                      ? "bg-yellow-600"
-                      : "bg-red-600"
-                  }`}
-                >
+                <span className={`px-3 py-1 rounded-full text-xs font-bold text-white ${getBadgeColor(comunidad.asistencia)}`}>
                   {comunidad.asistencia.toFixed(1)}%
                 </span>
               </td>
-              <td className="px-6 py-4 text-center font-semibold text-gray-900">
-                {comunidad.actividades}
-              </td>
+              <td className="px-6 py-4 text-center">{comunidad.actividades}</td>
             </tr>
           ))}
         </tbody>
@@ -392,43 +361,24 @@ function TablaComparativaComunidades({
   );
 }
 
-// ============ COMPONENTE: Tabla Metas ============
-interface TablaMetasProps {
-  metas: Meta[];
-}
-
-function TablaMetas({ metas }: TablaMetasProps) {
+function TablaMetas({ metas }: { metas: Meta[] }) {
   return (
     <div className="space-y-4">
       {metas.map((meta) => (
-        <div key={meta.tecnicoId} className="border rounded-lg p-4">
-          <div className="flex justify-between items-start mb-2">
-            <h3 className="font-bold text-gray-900">{meta.tecnico}</h3>
-            <span
-              className={`px-3 py-1 rounded-full text-sm font-bold text-white ${
-                meta.porcentaje >= 90
-                  ? "bg-green-600"
-                  : meta.porcentaje >= 70
-                  ? "bg-yellow-600"
-                  : "bg-red-600"
-              }`}
-            >
+        <div key={meta.tecnicoId} className="border border-slate-200 rounded-xl p-4">
+          <div className="flex justify-between items-start mb-3">
+            <h3 className="font-bold text-slate-900">{meta.tecnico}</h3>
+            <span className={`px-3 py-1 rounded-full text-xs font-bold text-white ${getBadgeColor(meta.porcentaje)}`}>
               {meta.porcentaje}%
             </span>
           </div>
-          <div className="flex justify-between text-sm text-gray-600 mb-2">
+          <div className="flex justify-between text-sm text-slate-600 mb-2">
             <p>Meta: {meta.meta}</p>
             <p>Actual: {meta.actual}</p>
           </div>
-          <div className="w-full bg-gray-200 rounded-full h-2">
+          <div className="w-full bg-slate-200 rounded-full h-2.5">
             <div
-              className={`h-2 rounded-full transition-all ${
-                meta.porcentaje >= 90
-                  ? "bg-green-600"
-                  : meta.porcentaje >= 70
-                  ? "bg-yellow-600"
-                  : "bg-red-600"
-              }`}
+              className={`h-2.5 rounded-full ${getBadgeColor(meta.porcentaje)}`}
               style={{ width: `${Math.min(meta.porcentaje, 100)}%` }}
             ></div>
           </div>
@@ -438,43 +388,38 @@ function TablaMetas({ metas }: TablaMetasProps) {
   );
 }
 
-// ============ COMPONENTE: Tabla Alertas ============
-interface TablaAlertasProps {
-  alertas: Alerta[];
-  filtroTecnico: string;
-  filtroEntidad: string;
-  usuarios: Usuario[];
-  comunidades: Comunidad[];
-}
-
 function TablaAlertas({
   alertas,
   filtroTecnico,
   filtroEntidad,
   usuarios,
   comunidades,
-}: TablaAlertasProps) {
+}: {
+  alertas: Alerta[];
+  filtroTecnico: string;
+  filtroEntidad: string;
+  usuarios: Usuario[];
+  comunidades: Comunidad[];
+}) {
   const alertasFiltradas = useMemo(() => {
     let resultado = [...alertas];
 
     if (filtroTecnico !== "todos") {
-      resultado = resultado.filter(
-        (a) =>
-          a.tipo === "tecnico" &&
-          usuarios.find((u) => u.id === filtroTecnico)?.nombre
-            ?.toLowerCase()
-            .includes(a.titulo.toLowerCase())
-      );
+      const tecnico = usuarios.find((u) => u.id === filtroTecnico);
+      if (tecnico) {
+        resultado = resultado.filter((a) =>
+          a.titulo.toLowerCase().includes(tecnico.nombre.toLowerCase())
+        );
+      }
     }
 
     if (filtroEntidad !== "todos") {
-      resultado = resultado.filter(
-        (a) =>
-          a.tipo === "comunidad" &&
-          comunidades.find((c) => c.id === filtroEntidad)?.nombre
-            ?.toLowerCase()
-            .includes(a.titulo.toLowerCase())
-      );
+      const comunidad = comunidades.find((c) => c.id === filtroEntidad);
+      if (comunidad) {
+        resultado = resultado.filter((a) =>
+          a.titulo.toLowerCase().includes(comunidad.nombre.toLowerCase())
+        );
+      }
     }
 
     return resultado.sort((a, b) => {
@@ -486,7 +431,7 @@ function TablaAlertas({
   return (
     <div className="space-y-3">
       {alertasFiltradas.length === 0 ? (
-        <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
+        <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-center">
           <p className="text-green-800 font-medium">
             ✅ No hay alertas. Todo está en orden.
           </p>
@@ -495,7 +440,7 @@ function TablaAlertas({
         alertasFiltradas.map((alerta, idx) => (
           <div
             key={idx}
-            className={`p-4 rounded-lg border-l-4 ${
+            className={`p-4 rounded-xl border-l-4 ${
               alerta.severidad === "alto"
                 ? "bg-red-50 border-red-500"
                 : alerta.severidad === "medio"
@@ -504,7 +449,7 @@ function TablaAlertas({
             }`}
           >
             <div className="flex justify-between items-start mb-2">
-              <h3 className="font-bold text-gray-900">{alerta.titulo}</h3>
+              <h3 className="font-bold text-slate-900">{alerta.titulo}</h3>
               <span
                 className={`px-2 py-1 rounded text-xs font-bold text-white ${
                   alerta.severidad === "alto"
@@ -517,8 +462,8 @@ function TablaAlertas({
                 {alerta.severidad.toUpperCase()}
               </span>
             </div>
-            <p className="text-sm text-gray-700 mb-2">{alerta.descripcion}</p>
-            <p className="text-sm font-semibold text-gray-600">
+            <p className="text-sm text-slate-700 mb-2">{alerta.descripcion}</p>
+            <p className="text-sm font-semibold text-slate-600">
               💡 {alerta.recomendacion}
             </p>
           </div>
@@ -528,913 +473,42 @@ function TablaAlertas({
   );
 }
 
-// ============ COMPONENTE: Agenda Semanal ============
-interface AgendaSemanalProps {
-  agendasTecnicos: AgendaSemanal[];
-  semanaActiva: Semana | null;
-  periodo: "semana" | "mes" | "año";
-  seguimientos: Seguimiento[];
-}
-
-function AgendaSemanalComponent({
-  agendasTecnicos,
-  semanaActiva,
-  periodo,
-  seguimientos,
-}: AgendaSemanalProps) {
-  const getTituloAgenda = () => {
-    switch (periodo) {
-      case "semana":
-        return semanaActiva
-          ? `Semana del ${semanaActiva.fechaInicio} al ${semanaActiva.fechaFin}`
-          : "Semana Actual";
-      case "mes":
-        const hoy = new Date();
-        return `Mes de ${hoy.toLocaleDateString("es-ES", {
-          month: "long",
-          year: "numeric",
-        })}`;
-      case "año":
-        return `Año ${new Date().getFullYear()}`;
-      default:
-        return "Agenda";
-    }
-  };
-
-  const getActividadesTotales = (tecnicoId: string) => {
-    // SUMA ACTIVIDADES ACTIVAS Y NO ACTIVAS
-    return seguimientos
-      .filter((s) => s.tecnicoId === tecnicoId)
-      .flatMap((s) => s.actividadesRegulares || []).length;
-  };
-
-  return (
-    <Panel titulo={`📅 Agenda ${getTituloAgenda()}`}>
-      <div className="space-y-4">
-        {agendasTecnicos.length === 0 ? (
-          <p className="text-gray-500 text-center py-8">Sin actividades</p>
-        ) : (
-          agendasTecnicos.map((agenda) => (
-            <div
-              key={agenda.tecnico.id}
-              className="border rounded-lg p-4 hover:shadow-md transition"
-            >
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-bold text-gray-900">
-                  👤 {agenda.tecnico.nombre}
-                </h3>
-                <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-semibold">
-                  {getActividadesTotales(agenda.tecnico.id)} actividades totales
-                </span>
-              </div>
-
-              <div className="space-y-2 max-h-48 overflow-y-auto">
-                {agenda.actividades.length === 0 ? (
-                  <p className="text-gray-500 text-sm italic">
-                    Sin actividades planificadas
-                  </p>
-                ) : (
-                  agenda.actividades.map((act, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-start gap-3 pb-2 border-b border-gray-200 last:border-b-0"
-                    >
-                      <div className="text-xs font-bold bg-blue-50 text-blue-600 px-2 py-1 rounded whitespace-nowrap">
-                        {act.horario}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-gray-900 text-sm">
-                          📍 {act.comunidadNombre}
-                        </p>
-                        <p className="text-xs text-gray-600">
-                          {act.actividad}
-                        </p>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          ))
-        )}
-      </div>
-    </Panel>
-  );
-}
-
-// ============ COMPONENTE: Gestión de Participantes ============
-interface GestionParticipantesProps {
-  participantes: Participante[];
-  comunidades: Comunidad[];
-  usuarios: Usuario[];
-  onActualizar: () => void;
-}
-
-function GestionParticipantes({
-  participantes,
-  comunidades,
-  usuarios,
-  onActualizar,
-}: GestionParticipantesProps) {
-  const [filtroEstado, setFiltroEstado] = useState("todos");
-  const [filtroComunidad, setFiltroComunidad] = useState("todos");
-  const [filtroTecnico, setFiltroTecnico] = useState("todos");
-  const [busqueda, setBusqueda] = useState("");
-  const [showModal, setShowModal] = useState(false);
-  const [modo, setModo] = useState<"crear" | "editar">("crear");
-  const [participanteEditar, setParticipanteEditar] =
-    useState<Participante | null>(null);
-
-  const [formData, setFormData] = useState<FormParticipante>({
-    nombres: "",
-    apellidos: "",
-    edad: "",
-    genero: "M",
-    comunidadId: "",
-    tecnicoId: "",
-    estado: "activo",
-  });
-
-  const participantesFiltrados = useMemo(() => {
-    return participantes.filter((p) => {
-      const cumpleEstado =
-        filtroEstado === "todos" || p.estado === filtroEstado;
-      const cumpleComunidad =
-        filtroComunidad === "todos" || p.comunidadId === filtroComunidad;
-      const cumpleTecnico =
-        filtroTecnico === "todos" || p.tecnicoId === filtroTecnico;
-      const cumpleBusqueda =
-        busqueda === "" ||
-        p.nombres.toLowerCase().includes(busqueda.toLowerCase()) ||
-        p.apellidos.toLowerCase().includes(busqueda.toLowerCase());
-
-      return (
-        cumpleEstado &&
-        cumpleComunidad &&
-        cumpleTecnico &&
-        cumpleBusqueda
-      );
-    });
-  }, [
-    participantes,
-    filtroEstado,
-    filtroComunidad,
-    filtroTecnico,
-    busqueda,
-  ]);
-
-  const handleAbrirCrear = () => {
-    setModo("crear");
-    setParticipanteEditar(null);
-    setFormData({
-      nombres: "",
-      apellidos: "",
-      edad: "",
-      genero: "M",
-      comunidadId: "",
-      tecnicoId: "",
-      estado: "activo",
-    });
-    setShowModal(true);
-  };
-
-  const handleAbrirEditar = (participante: Participante) => {
-    setModo("editar");
-    setParticipanteEditar(participante);
-    setFormData({
-      nombres: participante.nombres,
-      apellidos: participante.apellidos,
-      edad: participante.edad,
-      genero: participante.genero as "M" | "F" | "Otro",
-      comunidadId: participante.comunidadId,
-      tecnicoId: participante.tecnicoId || "",
-      estado: participante.estado,
-    });
-    setShowModal(true);
-  };
-
-  const handleGuardar = async () => {
-    try {
-      if (
-        !formData.nombres ||
-        !formData.apellidos ||
-        !formData.comunidadId ||
-        !formData.tecnicoId ||
-        !formData.edad
-      ) {
-        alert("Completa todos los campos");
-        return;
-      }
-
-      if (modo === "crear") {
-        await addDoc(collection(db, "participantes"), {
-          ...formData,
-          edad: Number(formData.edad),
-          fechaRegistro: new Date().toISOString().split("T")[0],
-        });
-        alert("✅ Participante creado");
-      } else if (participanteEditar) {
-        const docRef = doc(db, "participantes", participanteEditar.id);
-        await updateDoc(docRef, {
-          ...formData,
-          edad: Number(formData.edad),
-        });
-        alert("✅ Participante actualizado");
-      }
-
-      setShowModal(false);
-      onActualizar();
-    } catch (err) {
-      alert("❌ Error: " + (err instanceof Error ? err.message : "Desconocido"));
-    }
-  };
-
-  const handleEliminar = async (id: string) => {
-    if (!confirm("¿Estás seguro de que deseas eliminar este participante?")) {
-      return;
-    }
-
-    try {
-      await deleteDoc(doc(db, "participantes", id));
-      alert("✅ Participante eliminado");
-      onActualizar();
-    } catch (err) {
-      alert("❌ Error: " + (err instanceof Error ? err.message : "Desconocido"));
-    }
-  };
-
-  const handleCambiarEstado = async (
-    participante: Participante,
-    nuevoEstado: "activo" | "inactivo"
-  ) => {
-    try {
-      const docRef = doc(db, "participantes", participante.id);
-      await updateDoc(docRef, { estado: nuevoEstado });
-      alert("✅ Estado actualizado");
-      onActualizar();
-    } catch (err) {
-      alert("❌ Error: " + (err instanceof Error ? err.message : "Desconocido"));
-    }
-  };
-
-  const tecnicosYAdmins = usuarios.filter(
-    (u) => u.rol === "tecnico" || u.rol === "admin"
-  );
-
-  return (
-    <>
-      {/* Panel de Filtros y Botón Crear */}
-      <Panel titulo="👥 Gestión de Participantes">
-        <div className="space-y-4">
-          <div className="flex justify-between items-center">
-            <p className="text-gray-600 font-semibold">
-              Total: <span className="font-bold text-blue-600">{participantes.length}</span> | 
-              Mostrando: <span className="font-bold text-green-600">{participantesFiltrados.length}</span>
-            </p>
-            <button
-              onClick={handleAbrirCrear}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-semibold transition"
-            >
-              ➕ Nuevo Participante
-            </button>
-          </div>
-
-          {/* Filtros */}
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4 bg-gray-50 p-4 rounded-lg">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">
-                Buscar
-              </label>
-              <input
-                type="text"
-                placeholder="Nombres o apellidos..."
-                value={busqueda}
-                onChange={(e) => setBusqueda(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">
-                Estado
-              </label>
-              <select
-                value={filtroEstado}
-                onChange={(e) => setFiltroEstado(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="todos">Todos</option>
-                <option value="activo">Activo</option>
-                <option value="inactivo">Inactivo</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">
-                Técnico
-              </label>
-              <select
-                value={filtroTecnico}
-                onChange={(e) => setFiltroTecnico(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="todos">Todos</option>
-                {tecnicosYAdmins.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.nombre}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">
-                Comunidad
-              </label>
-              <select
-                value={filtroComunidad}
-                onChange={(e) => setFiltroComunidad(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="todos">Todas</option>
-                {comunidades.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.nombre}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">
-                Resultados
-              </label>
-              <div className="bg-blue-100 text-blue-800 px-4 py-2 rounded-lg font-bold text-center text-sm">
-                {participantesFiltrados.length}
-              </div>
-            </div>
-          </div>
-        </div>
-      </Panel>
-
-      {/* Tabla de Participantes */}
-      <div className="bg-white rounded-lg shadow-md overflow-x-auto">
-        {participantesFiltrados.length === 0 ? (
-          <div className="p-8 text-center text-gray-500">
-            <p>No hay participantes que coincidan con los filtros</p>
-          </div>
-        ) : (
-          <table className="w-full">
-            <thead className="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
-              <tr>
-                <th className="px-6 py-3 text-left font-semibold text-sm">Nombres</th>
-                <th className="px-6 py-3 text-left font-semibold text-sm">Apellidos</th>
-                <th className="px-6 py-3 text-center font-semibold text-sm">Edad</th>
-                <th className="px-6 py-3 text-center font-semibold text-sm">Género</th>
-                <th className="px-6 py-3 text-left font-semibold text-sm">Comunidad</th>
-                <th className="px-6 py-3 text-left font-semibold text-sm">Técnico</th>
-                <th className="px-6 py-3 text-center font-semibold text-sm">Estado</th>
-                <th className="px-6 py-3 text-center font-semibold text-sm">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {participantesFiltrados.map((participante) => {
-                const comunidad = comunidades.find(
-                  (c) => c.id === participante.comunidadId
-                );
-                const tecnico = usuarios.find(
-                  (u) => u.id === participante.tecnicoId
-                );
-
-                return (
-                  <tr key={participante.id} className="hover:bg-gray-50 transition">
-                    <td className="px-6 py-4 font-semibold text-gray-900 text-sm">
-                      {participante.nombres}
-                    </td>
-                    <td className="px-6 py-4 text-gray-700 text-sm">
-                      {participante.apellidos}
-                    </td>
-                    <td className="px-6 py-4 text-center text-gray-700 text-sm">
-                      {participante.edad}
-                    </td>
-                    <td className="px-6 py-4 text-center font-semibold text-sm">
-                      {participante.genero === "M"
-                        ? "👨"
-                        : participante.genero === "F"
-                        ? "👩"
-                        : "⚪"}
-                    </td>
-                    <td className="px-6 py-4 text-gray-700 text-sm">
-                      {comunidad?.nombre || "No asignada"}
-                    </td>
-                    <td className="px-6 py-4 text-gray-700 text-sm">
-                      {tecnico?.nombre || "No asignado"}
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <button
-                        onClick={() =>
-                          handleCambiarEstado(
-                            participante,
-                            participante.estado === "activo"
-                              ? "inactivo"
-                              : "activo"
-                          )
-                        }
-                        className={`px-3 py-1 rounded-full text-xs font-semibold text-white transition ${
-                          participante.estado === "activo"
-                            ? "bg-green-600 hover:bg-green-700"
-                            : "bg-red-600 hover:bg-red-700"
-                        }`}
-                      >
-                        {participante.estado === "activo" ? "✅" : "❌"}
-                      </button>
-                    </td>
-                    <td className="px-6 py-4 text-center space-x-2">
-                      <button
-                        onClick={() => handleAbrirEditar(participante)}
-                        className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded font-semibold transition text-sm"
-                      >
-                        ✏️
-                      </button>
-                      <button
-                        onClick={() => handleEliminar(participante.id)}
-                        className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded font-semibold transition text-sm"
-                      >
-                        🗑️
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {/* Modal */}
-      {showModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6">
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">
-              {modo === "crear"
-                ? "➕ Nuevo Participante"
-                : "✏️ Editar Participante"}
-            </h2>
-
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    Nombres *
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.nombres}
-                    onChange={(e) =>
-                      setFormData({ ...formData, nombres: e.target.value })
-                    }
-                    className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
-                    placeholder="Ej: Juan"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    Apellidos *
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.apellidos}
-                    onChange={(e) =>
-                      setFormData({ ...formData, apellidos: e.target.value })
-                    }
-                    className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
-                    placeholder="Ej: García"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    Edad *
-                  </label>
-                  <input
-                    type="number"
-                    value={formData.edad}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        edad: e.target.value === "" ? "" : Number(e.target.value),
-                      })
-                    }
-                    className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
-                    placeholder="18"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    Género *
-                  </label>
-                  <select
-                    value={formData.genero}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        genero: e.target.value as "M" | "F" | "Otro",
-                      })
-                    }
-                    className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="M">Masculino</option>
-                    <option value="F">Femenino</option>
-                    <option value="Otro">Otro</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    Comunidad *
-                  </label>
-                  <select
-                    value={formData.comunidadId}
-                    onChange={(e) => {
-                      const comunidad = comunidades.find(
-                        (c) => c.id === e.target.value
-                      );
-                      setFormData({
-                        ...formData,
-                        comunidadId: e.target.value,
-                        tecnicoId: comunidad?.tecnicoId || "",
-                      });
-                    }}
-                    className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Selecciona una comunidad</option>
-                    {comunidades.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.nombre}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    Técnico *
-                  </label>
-                  <select
-                    value={formData.tecnicoId}
-                    onChange={(e) =>
-                      setFormData({ ...formData, tecnicoId: e.target.value })
-                    }
-                    className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Selecciona un técnico</option>
-                    {tecnicosYAdmins.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.nombre}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    Estado *
-                  </label>
-                  <select
-                    value={formData.estado}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        estado: e.target.value as "activo" | "inactivo",
-                      })
-                    }
-                    className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="activo">Activo</option>
-                    <option value="inactivo">Inactivo</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* Botones */}
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => setShowModal(false)}
-                className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-900 px-4 py-2 rounded-lg font-semibold transition"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handleGuardar}
-                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold transition"
-              >
-                {modo === "crear" ? "Crear" : "Actualizar"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
-// ============ COMPONENTE: Generador de PDFs - HORIZONTAL ============
-interface GeneradorPDFsProps {
-  datos: ReturnType<typeof useDatosReportes>;
-  comparativasTecnicos: ComparativaTecnico[];
-  semanaActiva: Semana | null;
-  seguimientos: Seguimiento[];
-}
-
+// ================== EXPORTACIONES ==================
 function GeneradorPDFs({
-  datos,
   comparativasTecnicos,
-  semanaActiva,
-  seguimientos,
-}: GeneradorPDFsProps) {
+  comunidades,
+  participantes,
+}: {
+  comparativasTecnicos: ComparativaTecnico[];
+  comunidades: Comunidad[];
+  participantes: Participante[];
+}) {
   const [generando, setGenerando] = useState(false);
-
-  const convertirImagenABase64 = (imagenUrl: string): Promise<string> => {
-    return new Promise((resolve) => {
-      try {
-        const imagen = new window.Image();
-        imagen.crossOrigin = "anonymous";
-        imagen.onload = () => {
-          const canvas = document.createElement("canvas");
-          canvas.width = imagen.width;
-          canvas.height = imagen.height;
-          const ctx = canvas.getContext("2d");
-          ctx?.drawImage(imagen, 0, 0);
-          resolve(canvas.toDataURL("image/jpeg", 0.7));
-        };
-        imagen.src = imagenUrl;
-      } catch {
-        resolve("");
-      }
-    });
-  };
 
   const generarPDFDistribucionComunidades = async () => {
     try {
       setGenerando(true);
 
-      // FORMATO HORIZONTAL (LANDSCAPE)
       const doc = new jsPDF({ orientation: "landscape" });
-      const pageWidth = doc.internal.pageSize.getWidth();
-      const pageHeight = doc.internal.pageSize.getHeight();
-
-      // Encabezado con Logo
-      const logoUrl = "/logo-gad.png";
-      const logoBase64 = await convertirImagenABase64(logoUrl);
-
-      if (logoBase64) {
-        doc.addImage(logoBase64, "PNG", 15, 10, 30, 30);
-      }
-
-      // Información del GAD
-      doc.setFontSize(10);
-      doc.setTextColor(76, 175, 80);
-      doc.setFont("helvetica", "bold");
-      doc.text("GAD Municipal del Cantón", 50, 15);
-      doc.text("Montecristi", 50, 20);
-
-      // Título
       doc.setFontSize(16);
-      doc.setTextColor(0, 0, 0);
-      doc.setFont("helvetica", "bold");
-      doc.text(
-        "DISTRIBUCIÓN DE COMUNIDADES POR TÉCNICO",
-        pageWidth / 2,
-        35,
-        { align: "center" }
-      );
+      doc.text("DISTRIBUCIÓN DE COMUNIDADES POR TÉCNICO", 14, 18);
 
-      doc.setFontSize(10);
-      doc.setFont("helvetica", "normal");
-      doc.text(
-        `Generado: ${new Date().toLocaleDateString("es-ES")}`,
-        pageWidth / 2,
-        42,
-        { align: "center" }
-      );
-
-      let yPosition = 50;
-
-      for (const tecnico of comparativasTecnicos) {
-        if (yPosition > pageHeight - 50) {
-          doc.addPage();
-          yPosition = 20;
-        }
-
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(11);
-        doc.text(`Técnico: ${tecnico.tecnico}`, 15, yPosition);
-        yPosition += 8;
-
-        const comunidadesTecnico = datos.comunidades.filter(
-          (c) => c.tecnicoId === tecnico.tecnicoId
-        );
-
-        const tableData = comunidadesTecnico.map((com) => {
-          const participantes = datos.participantes.filter(
-            (p) => p.comunidadId === com.id
-          ).length;
-
-          return [com.nombre, participantes.toString()];
-        });
-
-        autoTable(doc, {
-          startY: yPosition,
-          head: [["Comunidad", "# Participantes"]],
-          body: tableData,
-          columnStyles: {
-            0: { cellWidth: 180 },
-            1: { cellWidth: 80, halign: "center" },
-          },
-          margin: { left: 15, right: 15 },
-        });
-
-        yPosition = (doc as any).lastAutoTable.finalY + 10;
-      }
-
-      // Pie de página
-      const paginasTotal = doc.getNumberOfPages();
-      for (let i = 1; i <= paginasTotal; i++) {
-        doc.setPage(i);
-        doc.setDrawColor(76, 175, 80);
-        doc.setLineWidth(0.5);
-        doc.line(15, pageHeight - 15, pageWidth - 15, pageHeight - 15);
-
-        doc.setFontSize(8);
-        doc.setTextColor(100, 100, 100);
-        doc.text("Montecristi Crece en Valores", 20, pageHeight - 10);
-        doc.text(`Página ${i} de ${paginasTotal}`, pageWidth - 40, pageHeight - 10);
-      }
-
-      doc.save("Distribucion_Comunidades_Tecnicos.pdf");
-      alert("✅ PDF generado correctamente");
-    } finally {
-      setGenerando(false);
-    }
-  };
-
-  const generarPDFInformeSemanal = async () => {
-    try {
-      setGenerando(true);
-
-      if (!semanaActiva) {
-        alert("Selecciona una semana");
-        return;
-      }
-
-      // FORMATO HORIZONTAL
-      const doc = new jsPDF({ orientation: "landscape" });
-      const pageWidth = doc.internal.pageSize.getWidth();
-      const pageHeight = doc.internal.pageSize.getHeight();
-
-      // Logo
-      const logoUrl = "/logo-gad.png";
-      const logoBase64 = await convertirImagenABase64(logoUrl);
-
-      if (logoBase64) {
-        doc.addImage(logoBase64, "PNG", 15, 10, 30, 30);
-      }
-
-      doc.setFontSize(10);
-      doc.setTextColor(76, 175, 80);
-      doc.setFont("helvetica", "bold");
-      doc.text("GAD Municipal del Cantón", 50, 15);
-      doc.text("Montecristi", 50, 20);
-
-      // Título
-      doc.setFontSize(16);
-      doc.setTextColor(0, 0, 0);
-      doc.setFont("helvetica", "bold");
-      doc.text(
-        "INFORME SEMANAL - ACTIVIDADES REALIZADAS",
-        pageWidth / 2,
-        35,
-        { align: "center" }
-      );
-
-      const infoData = [
-        [
-          "Período:",
-          `${semanaActiva.fechaInicio} al ${semanaActiva.fechaFin}`,
-        ],
-        ["Generado:", new Date().toLocaleDateString("es-ES")],
-      ];
+      const body = comunidades.map((com) => [
+        com.nombre,
+        String(
+          participantes.filter(
+            (p) => p.comunidadId === com.id && p.estado === "activo"
+          ).length
+        ),
+      ]);
 
       autoTable(doc, {
-        startY: 42,
-        head: [],
-        body: infoData,
-        columnStyles: {
-          0: {
-            cellWidth: 60,
-            fontStyle: "bold",
-            fillColor: [76, 175, 80],
-            textColor: [255, 255, 255],
-          },
-          1: { cellWidth: pageWidth - 90 },
-        },
-        margin: { left: 15, right: 15 },
+        startY: 28,
+        head: [["Comunidad", "Participantes Activos"]],
+        body,
       });
 
-      let yPosition = (doc as any).lastAutoTable.finalY + 10;
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(11);
-      doc.text("ACTIVIDADES REALIZADAS EN LA SEMANA", 15, yPosition);
-      yPosition += 8;
-
-      // DETALLE DE ACTIVIDADES CON DESCRIPCIÓN TEXTUAL
-      for (const tecnico of comparativasTecnicos) {
-        const segsTecnico = seguimientos.filter(
-          (s) => s.tecnicoId === tecnico.tecnicoId
-        );
-
-        segsTecnico.forEach((seg) => {
-          if (seg.actividadesRegulares && seg.actividadesRegulares.length > 0) {
-            seg.actividadesRegulares.forEach((actividad: any) => {
-              if (
-                actividad.estadoActividad === "realizada" &&
-                yPosition < pageHeight - 50
-              ) {
-                // TEXTO DE LA ACTIVIDAD
-                doc.setFont("helvetica", "bold");
-                doc.setFontSize(10);
-                doc.text(`Técnico: ${tecnico.tecnico}`, 15, yPosition);
-                yPosition += 6;
-
-                doc.setFont("helvetica", "normal");
-                doc.setFontSize(9);
-                doc.text(
-                  `📍 Comunidad: ${actividad.comunidadNombre || "N/A"}`,
-                  20,
-                  yPosition
-                );
-                yPosition += 5;
-                doc.text(`📅 Fecha: ${actividad.fecha || "N/A"}`, 20, yPosition);
-                yPosition += 5;
-                doc.text(
-                  `📋 Actividad: ${actividad.actividad || "N/A"}`,
-                  20,
-                  yPosition
-                );
-                yPosition += 5;
-                doc.text(
-                  `👥 Participantes: ${actividad.participantes || actividad.asistentes || "N/A"}`,
-                  20,
-                  yPosition
-                );
-                yPosition += 5;
-                doc.text(
-                  `📊 Porcentaje Asistencia: ${actividad.porcentajeAsistencia || "N/A"}%`,
-                  20,
-                  yPosition
-                );
-                yPosition += 6;
-
-                // AGREGAR FOTO SI EXISTE
-                if (actividad.fotos && actividad.fotos.length > 0) {
-                  try {
-                    const fotoBase64 = actividad.fotos[0];
-                    if (fotoBase64.includes("data:image")) {
-                      doc.addImage(fotoBase64, "JPEG", 20, yPosition, 40, 30);
-                      yPosition += 35;
-                    }
-                  } catch (err) {
-                    console.log("Error agregando imagen");
-                  }
-                }
-
-                yPosition += 5;
-              }
-            });
-          }
-        });
-      }
-
-      // Pie de página
-      const paginasTotal = doc.getNumberOfPages();
-      for (let i = 1; i <= paginasTotal; i++) {
-        doc.setPage(i);
-        doc.setDrawColor(76, 175, 80);
-        doc.setLineWidth(0.5);
-        doc.line(15, pageHeight - 15, pageWidth - 15, pageHeight - 15);
-
-        doc.setFontSize(8);
-        doc.setTextColor(100, 100, 100);
-        doc.text("Montecristi Crece en Valores", 20, pageHeight - 10);
-        doc.text(`Página ${i} de ${paginasTotal}`, pageWidth - 40, pageHeight - 10);
-      }
-
-      doc.save(`Informe_Semanal_${semanaActiva.fechaInicio}.pdf`);
-      alert("✅ PDF generado correctamente");
+      doc.save("Distribucion_Comunidades_Tecnicos.pdf");
     } finally {
       setGenerando(false);
     }
@@ -1444,280 +518,70 @@ function GeneradorPDFs({
     try {
       setGenerando(true);
 
-      // FORMATO HORIZONTAL
       const doc = new jsPDF({ orientation: "landscape" });
-      const pageWidth = doc.internal.pageSize.getWidth();
-      const pageHeight = doc.internal.pageSize.getHeight();
-
-      // Logo
-      const logoUrl = "/logo-gad.png";
-      const logoBase64 = await convertirImagenABase64(logoUrl);
-
-      if (logoBase64) {
-        doc.addImage(logoBase64, "PNG", 15, 10, 30, 30);
-      }
-
-      doc.setFontSize(10);
-      doc.setTextColor(76, 175, 80);
-      doc.setFont("helvetica", "bold");
-      doc.text("GAD Municipal del Cantón", 50, 15);
-      doc.text("Montecristi", 50, 20);
-
-      // Título
       doc.setFontSize(16);
-      doc.setTextColor(0, 0, 0);
-      doc.setFont("helvetica", "bold");
-      doc.text(
-        "INFORME MENSUAL",
-        pageWidth / 2,
-        35,
-        { align: "center" }
-      );
-
-      const hoy = new Date();
-      const infoData = [
-        [
-          "Período:",
-          `${hoy.toLocaleDateString("es-ES", {
-            month: "long",
-            year: "numeric",
-          })}`,
-        ],
-        ["Generado:", new Date().toLocaleDateString("es-ES")],
-      ];
+      doc.text("INFORME MENSUAL", 14, 18);
 
       autoTable(doc, {
-        startY: 42,
-        head: [],
-        body: infoData,
-        columnStyles: {
-          0: {
-            cellWidth: 60,
-            fontStyle: "bold",
-            fillColor: [76, 175, 80],
-            textColor: [255, 255, 255],
-          },
-          1: { cellWidth: pageWidth - 90 },
-        },
-        margin: { left: 15, right: 15 },
+        startY: 28,
+        head: [[
+          "Técnico",
+          "Comunidades Actuales",
+          "Participantes Actuales",
+          "Actividades Históricas",
+          "Cumplimiento Histórico",
+          "Asistencia Histórica",
+        ]],
+        body: comparativasTecnicos.map((t) => [
+          t.tecnico,
+          String(t.comunidades),
+          String(t.participantes),
+          String(t.actividades),
+          `${t.cumplimiento}%`,
+          `${t.asistencia.toFixed(1)}%`,
+        ]),
       });
 
-      let yPosition = (doc as any).lastAutoTable.finalY + 10;
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(11);
-      doc.text("CONSOLIDADO MENSUAL POR TÉCNICO", 15, yPosition);
-      yPosition += 8;
-
-      const tableData = comparativasTecnicos.map((tecnico) => [
-        tecnico.tecnico,
-        tecnico.participantes.toString(),
-        tecnico.actividades.toString(),
-        tecnico.cumplimiento + "%",
-        tecnico.asistencia.toFixed(1) + "%",
-      ]);
-
-      autoTable(doc, {
-        startY: yPosition,
-        head: [["Técnico", "Participantes", "Actividades", "Cumplimiento", "Asistencia"]],
-        body: tableData,
-        columnStyles: {
-          0: { cellWidth: 100 },
-          1: { cellWidth: 60, halign: "center" },
-          2: { cellWidth: 60, halign: "center" },
-          3: { cellWidth: 60, halign: "center" },
-          4: { cellWidth: 60, halign: "center" },
-        },
-        margin: { left: 15, right: 15 },
-      });
-
-      // Pie de página
-      const paginasTotal = doc.getNumberOfPages();
-      for (let i = 1; i <= paginasTotal; i++) {
-        doc.setPage(i);
-        doc.setDrawColor(76, 175, 80);
-        doc.setLineWidth(0.5);
-        doc.line(15, pageHeight - 15, pageWidth - 15, pageHeight - 15);
-
-        doc.setFontSize(8);
-        doc.setTextColor(100, 100, 100);
-        doc.text("Montecristi Crece en Valores", 20, pageHeight - 10);
-        doc.text(`Página ${i} de ${paginasTotal}`, pageWidth - 40, pageHeight - 10);
-      }
-
-      doc.save(`Informe_Mensual_${hoy.toISOString().slice(0, 7)}.pdf`);
-      alert("✅ PDF generado correctamente");
-    } finally {
-      setGenerando(false);
-    }
-  };
-
-  const generarPDFInformeAnual = async () => {
-    try {
-      setGenerando(true);
-
-      // FORMATO HORIZONTAL
-      const doc = new jsPDF({ orientation: "landscape" });
-      const pageWidth = doc.internal.pageSize.getWidth();
-      const pageHeight = doc.internal.pageSize.getHeight();
-
-      // Logo
-      const logoUrl = "/logo-gad.png";
-      const logoBase64 = await convertirImagenABase64(logoUrl);
-
-      if (logoBase64) {
-        doc.addImage(logoBase64, "PNG", 15, 10, 30, 30);
-      }
-
-      doc.setFontSize(10);
-      doc.setTextColor(76, 175, 80);
-      doc.setFont("helvetica", "bold");
-      doc.text("GAD Municipal del Cantón", 50, 15);
-      doc.text("Montecristi", 50, 20);
-
-      // Título
-      doc.setFontSize(16);
-      doc.setTextColor(0, 0, 0);
-      doc.setFont("helvetica", "bold");
-      doc.text(
-        "INFORME ANUAL",
-        pageWidth / 2,
-        35,
-        { align: "center" }
-      );
-
-      const hoy = new Date();
-      const infoData = [
-        ["Año:", hoy.getFullYear().toString()],
-        ["Generado:", new Date().toLocaleDateString("es-ES")],
-      ];
-
-      autoTable(doc, {
-        startY: 42,
-        head: [],
-        body: infoData,
-        columnStyles: {
-          0: {
-            cellWidth: 60,
-            fontStyle: "bold",
-            fillColor: [76, 175, 80],
-            textColor: [255, 255, 255],
-          },
-          1: { cellWidth: pageWidth - 90 },
-        },
-        margin: { left: 15, right: 15 },
-      });
-
-      let yPosition = (doc as any).lastAutoTable.finalY + 10;
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(11);
-      doc.text("RESUMEN ANUAL POR TÉCNICO", 15, yPosition);
-      yPosition += 8;
-
-      const tableData = comparativasTecnicos.map((tecnico) => [
-        tecnico.tecnico,
-        tecnico.comunidades.toString(),
-        tecnico.participantes.toString(),
-        tecnico.actividades.toString(),
-        tecnico.cumplimiento + "%",
-        tecnico.asistencia.toFixed(1) + "%",
-      ]);
-
-      autoTable(doc, {
-        startY: yPosition,
-        head: [["Técnico", "Comunidades", "Participantes", "Actividades", "Cumplimiento", "Asistencia"]],
-        body: tableData,
-        columnStyles: {
-          0: { cellWidth: 80 },
-          1: { cellWidth: 50, halign: "center" },
-          2: { cellWidth: 60, halign: "center" },
-          3: { cellWidth: 60, halign: "center" },
-          4: { cellWidth: 50, halign: "center" },
-          5: { cellWidth: 50, halign: "center" },
-        },
-        margin: { left: 15, right: 15 },
-      });
-
-      // Pie de página
-      const paginasTotal = doc.getNumberOfPages();
-      for (let i = 1; i <= paginasTotal; i++) {
-        doc.setPage(i);
-        doc.setDrawColor(76, 175, 80);
-        doc.setLineWidth(0.5);
-        doc.line(15, pageHeight - 15, pageWidth - 15, pageHeight - 15);
-
-        doc.setFontSize(8);
-        doc.setTextColor(100, 100, 100);
-        doc.text("Montecristi Crece en Valores", 20, pageHeight - 10);
-        doc.text(`Página ${i} de ${paginasTotal}`, pageWidth - 40, pageHeight - 10);
-      }
-
-      doc.save(`Informe_Anual_${hoy.getFullYear()}.pdf`);
-      alert("✅ PDF generado correctamente");
+      doc.save("Informe_Mensual.pdf");
     } finally {
       setGenerando(false);
     }
   };
 
   return (
-    <Panel titulo="📄 Generar Reportes Institucionales">
+    <Panel
+      titulo="📄 Exportaciones"
+      subtitle="Genera documentos institucionales para análisis y presentación."
+    >
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <button
           onClick={generarPDFDistribucionComunidades}
           disabled={generando}
-          className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-6 py-3 rounded-lg font-semibold transition flex items-center justify-center gap-2"
+          className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-6 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2"
         >
           {generando ? "⏳" : "📥"} Distribución Comunidades
         </button>
 
         <button
-          onClick={generarPDFInformeSemanal}
-          disabled={generando}
-          className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white px-6 py-3 rounded-lg font-semibold transition flex items-center justify-center gap-2"
-        >
-          {generando ? "⏳" : "📅"} Informe Semanal
-        </button>
-
-        <button
           onClick={generarPDFInformeMensual}
           disabled={generando}
-          className="bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 text-white px-6 py-3 rounded-lg font-semibold transition flex items-center justify-center gap-2"
+          className="bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 text-white px-6 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2"
         >
           {generando ? "⏳" : "📊"} Informe Mensual
-        </button>
-
-        <button
-          onClick={generarPDFInformeAnual}
-          disabled={generando}
-          className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white px-6 py-3 rounded-lg font-semibold transition flex items-center justify-center gap-2"
-        >
-          {generando ? "⏳" : "📈"} Informe Anual
         </button>
       </div>
     </Panel>
   );
 }
 
-// ============ COMPONENTE PRINCIPAL ============
-export default function ReportesInstitucionales() {
+// ================== COMPONENTE PRINCIPAL ==================
+export default function ReportesInstitucionalesPage() {
   const datos = useDatosReportes();
   const [tabActivo, setTabActivo] = useState<
-    | "participantes"
-    | "agenda"
-    | "resumen"
-    | "comparativas"
-    | "tecnicos"
-    | "comunidades"
-    | "metas"
-    | "alertas"
-  >("participantes");
-  const [periodo, setPeriodo] = useState<"semana" | "mes" | "año">(
-    "semana"
-  );
+    "resumen" | "comparativas" | "tecnicos" | "comunidades" | "metas" | "alertas" | "exportaciones"
+  >("resumen");
   const [filtroTecnico, setFiltroTecnico] = useState("todos");
   const [filtroEntidad, setFiltroEntidad] = useState("todos");
-
   const [semanaActiva, setSemanaActiva] = useState<Semana | null>(null);
 
   useEffect(() => {
@@ -1728,63 +592,62 @@ export default function ReportesInstitucionales() {
     cargarSemana();
   }, []);
 
-  // ============ CALCULAR COMPARATIVAS TÉCNICOS ============
+  // ========= COMPARATIVAS TÉCNICOS =========
   const comparativasTecnicos = useMemo(() => {
     const tecnicos = datos.usuarios.filter(
       (u) => u.rol === "tecnico" || u.rol === "admin"
     );
 
     return tecnicos.map((tecnico) => {
-      const comunidadesAsignadas = datos.comunidades.filter(
-        (c) => c.tecnicoId === tecnico.id
+      const comunidadesIds = obtenerIdsComunidadesDelTecnico(tecnico.id, datos.comunidades);
+
+      const participantesActuales = datos.participantes.filter(
+        (p) =>
+          p.estado === "activo" &&
+          comunidadesIds.includes(p.comunidadId)
       ).length;
 
-      const participantesTecnico = datos.participantes.filter(
-        (p) => p.tecnicoId === tecnico.id
-      ).length;
-
-      const actividades = datos.seguimientos
+      const actividadesHistoricas = datos.seguimientos
         .filter((s) => s.tecnicoId === tecnico.id)
         .flatMap((s) => s.actividadesRegulares || [])
         .filter((a: any) => a.estadoActividad === "realizada").length;
 
-      const registrosActividades = datos.seguimientos
+      const registrosHistoricos = datos.seguimientos
         .filter((s) => s.tecnicoId === tecnico.id)
         .flatMap((s) => s.actividadesRegulares || [])
         .filter((a: any) => a.estadoActividad === "realizada");
 
-      const asistenciaPromedio =
-        registrosActividades.length > 0
-          ? registrosActividades.reduce(
-              (sum: number, a: any) =>
-                sum + (a.porcentajeAsistencia || 0),
+      const asistenciaHistorica =
+        registrosHistoricos.length > 0
+          ? registrosHistoricos.reduce(
+              (sum: number, a: any) => sum + (a.porcentajeAsistencia || 0),
               0
-            ) / registrosActividades.length
+            ) / registrosHistoricos.length
           : 0;
 
-      const planificaciones = datos.planificaciones.filter(
+      const planificacionesEnviadas = datos.planificaciones.filter(
         (p) => p.tecnicoId === tecnico.id && p.estado === "enviado"
       ).length;
 
-      const seguimientos = datos.seguimientos.filter(
+      const seguimientosEnviados = datos.seguimientos.filter(
         (s) => s.tecnicoId === tecnico.id && s.estado === "enviado"
       ).length;
 
       const cumplimiento =
-        planificaciones > 0 && seguimientos > 0
+        planificacionesEnviadas > 0 && seguimientosEnviados > 0
           ? 100
-          : planificaciones > 0 || seguimientos > 0
+          : planificacionesEnviadas > 0 || seguimientosEnviados > 0
           ? 50
           : 0;
 
       return {
         tecnico: tecnico.nombre,
         tecnicoId: tecnico.id,
-        comunidades: comunidadesAsignadas,
-        participantes: participantesTecnico,
-        actividades,
+        comunidades: comunidadesIds.length,
+        participantes: participantesActuales,
+        actividades: actividadesHistoricas,
         cumplimiento,
-        asistencia: asistenciaPromedio,
+        asistencia: asistenciaHistorica,
       };
     });
   }, [
@@ -1795,33 +658,33 @@ export default function ReportesInstitucionales() {
     datos.planificaciones,
   ]);
 
-  // ============ CALCULAR COMPARATIVAS COMUNIDADES ============
+  // ========= COMPARATIVAS COMUNIDADES =========
   const comparativasComunidades = useMemo(() => {
     return datos.comunidades.map((comunidad) => {
       const tecnico = datos.usuarios.find((u) => u.id === comunidad.tecnicoId);
+
       const participantes = datos.participantes.filter(
-        (p) => p.comunidadId === comunidad.id
+        (p) => p.comunidadId === comunidad.id && p.estado === "activo"
       ).length;
 
       const registrosComunidad = datos.seguimientos
         .flatMap((s) => s.actividadesRegulares || [])
         .filter(
           (r: any) =>
-            (r.comunidadId === comunidad.id ||
-              r.comunidadNombre === comunidad.nombre) &&
+            r.comunidadId === comunidad.id &&
             r.estadoActividad === "realizada"
         );
 
       const asistenciaPromedio =
         registrosComunidad.length > 0
           ? registrosComunidad.reduce(
-              (sum: number, r: any) =>
-                sum + (r.porcentajeAsistencia || 0),
+              (sum: number, r: any) => sum + (r.porcentajeAsistencia || 0),
               0
             ) / registrosComunidad.length
           : 0;
 
       return {
+        comunidadId: comunidad.id,
         comunidad: comunidad.nombre,
         tecnico: tecnico?.nombre || "No asignado",
         participantes,
@@ -1829,81 +692,83 @@ export default function ReportesInstitucionales() {
         actividades: registrosComunidad.length,
       };
     });
-  }, [datos.comunidades, datos.usuarios, datos.seguimientos]);
+  }, [datos.comunidades, datos.usuarios, datos.seguimientos, datos.participantes]);
 
-  // ============ CALCULAR METAS - META ACTUALIZADA A 85 ============
+  // ========= METAS =========
   const metas = useMemo(() => {
     const tecnicos = datos.usuarios.filter(
       (u) => u.rol === "tecnico" || u.rol === "admin"
     );
 
     return tecnicos.map((tecnico) => {
-      const participantesTecnico = datos.participantes.filter(
-        (p) => p.tecnicoId === tecnico.id
+      const comunidadesIds = obtenerIdsComunidadesDelTecnico(
+        tecnico.id,
+        datos.comunidades
+      );
+
+      const participantesActuales = datos.participantes.filter(
+        (p) =>
+          p.estado === "activo" &&
+          comunidadesIds.includes(p.comunidadId)
       ).length;
 
       const metaTecnico = 85;
-      const porcentaje = Math.round((participantesTecnico / metaTecnico) * 100);
+      const porcentaje = Math.round((participantesActuales / metaTecnico) * 100);
 
       return {
         tecnico: tecnico.nombre,
         tecnicoId: tecnico.id,
         meta: metaTecnico,
-        actual: participantesTecnico,
+        actual: participantesActuales,
         porcentaje: Math.min(porcentaje, 100),
       };
     });
-  }, [datos.usuarios, datos.participantes]);
+  }, [datos.usuarios, datos.comunidades, datos.participantes]);
 
-  // ============ CALCULAR ALERTAS ============
+  // ========= ALERTAS =========
   const alertas = useMemo(() => {
-    const alertasGeneradas: Alerta[] = [];
+    const salida: Alerta[] = [];
 
-    comparativasTecnicos.forEach((tecnico) => {
-      if (tecnico.cumplimiento < 70) {
-        alertasGeneradas.push({
+    comparativasTecnicos.forEach((t) => {
+      if (t.cumplimiento < 70) {
+        salida.push({
           tipo: "tecnico",
-          titulo: `${tecnico.tecnico} - Bajo Cumplimiento`,
-          descripcion: `El técnico tiene ${tecnico.cumplimiento}% de cumplimiento.`,
-          severidad: tecnico.cumplimiento < 50 ? "alto" : "medio",
-          recomendacion:
-            "Realizar seguimiento y capacitación al técnico.",
+          titulo: `${t.tecnico} - Bajo cumplimiento`,
+          descripcion: `El técnico registra ${t.cumplimiento}% de cumplimiento histórico.`,
+          severidad: t.cumplimiento < 50 ? "alto" : "medio",
+          recomendacion: "Revisar planificación y seguimiento entregados.",
         });
       }
     });
 
-    comparativasComunidades.forEach((comunidad) => {
-      if (comunidad.asistencia < 70) {
-        alertasGeneradas.push({
+    comparativasComunidades.forEach((c) => {
+      if (c.asistencia < 70) {
+        salida.push({
           tipo: "comunidad",
-          titulo: `${comunidad.comunidad} - Baja Asistencia`,
-          descripcion: `Asistencia promedio: ${comunidad.asistencia.toFixed(1)}%`,
-          severidad:
-            comunidad.asistencia < 50 ? "alto" : "medio",
-          recomendacion:
-            "Realizar actividades de reenganche en la comunidad.",
+          titulo: `${c.comunidad} - Baja asistencia`,
+          descripcion: `Asistencia promedio actual: ${c.asistencia.toFixed(1)}%.`,
+          severidad: c.asistencia < 50 ? "alto" : "medio",
+          recomendacion: "Aplicar acciones de reenganche comunitario.",
         });
       }
     });
 
-    metas.forEach((meta) => {
-      if (meta.porcentaje < 70) {
-        alertasGeneradas.push({
+    metas.forEach((m) => {
+      if (m.porcentaje < 70) {
+        salida.push({
           tipo: "tecnico",
-          titulo: `${meta.tecnico} - Meta de Participantes`,
-          descripcion: `Cumplimiento: ${meta.porcentaje}% (${meta.actual}/${meta.meta})`,
-          severidad:
-            meta.porcentaje < 50 ? "alto" : "medio",
-          recomendacion:
-            "Intensificar esfuerzos de evangelización.",
+          titulo: `${m.tecnico} - Meta de participantes`,
+          descripcion: `Registra ${m.actual}/${m.meta} participantes activos.`,
+          severidad: m.porcentaje < 50 ? "alto" : "medio",
+          recomendacion: "Fortalecer permanencia y captación en sus comunidades actuales.",
         });
       }
     });
 
-    return alertasGeneradas;
+    return salida;
   }, [comparativasTecnicos, comparativasComunidades, metas]);
 
-  // ============ CALCULAR ESTADÍSTICAS ============
+  // ========= KPIS =========
   const estadisticas = useMemo(() => {
     const registros = datos.seguimientos
       .flatMap((s) => s.actividadesRegulares || [])
@@ -1912,84 +777,47 @@ export default function ReportesInstitucionales() {
     const asistenciaGlobal =
       registros.length > 0
         ? Math.round(
-            registros.reduce((sum: number, r: any) => sum + (r.porcentajeAsistencia || 0), 0) /
-              registros.length
+            registros.reduce(
+              (sum: number, r: any) => sum + (r.porcentajeAsistencia || 0),
+              0
+            ) / registros.length
           )
         : 0;
 
     return {
       actividades: registros.length,
       asistencia: asistenciaGlobal,
-      participantes: datos.participantes.length,
-      cumplimiento:
-        comparativasTecnicos.length > 0
-          ? Math.round(
-              comparativasTecnicos.reduce((sum, t) => sum + t.cumplimiento, 0) /
-                comparativasTecnicos.length
-            )
-          : 0,
+      participantes: datos.participantes.filter((p) => p.estado === "activo").length,
+      tecnicos: datos.usuarios.filter((u) => u.rol === "tecnico" || u.rol === "admin").length,
     };
-  }, [datos.seguimientos, datos.participantes, comparativasTecnicos]);
+  }, [datos]);
 
-  // ============ CONSTRUIR AGENDAS - TODAS LAS SEMANAS ============
-  const agendasTecnicos = useMemo(() => {
-    const tecnicos = datos.usuarios.filter(
-      (u) => u.rol === "tecnico" || u.rol === "admin"
-    );
+  const tecnicosYAdmins = datos.usuarios.filter(
+    (u) => u.rol === "tecnico" || u.rol === "admin"
+  );
 
-    return tecnicos
-      .map((tecnico) => {
-        let actividades: ActividadPlanificada[] = [];
+  const comparativasTecnicosFiltradas = comparativasTecnicos.filter((t) =>
+    filtroTecnico === "todos" ? true : t.tecnicoId === filtroTecnico
+  );
 
-        if (periodo === "semana") {
-          if (semanaActiva) {
-            const plan = datos.planificaciones.find(
-              (p) =>
-                p.tecnicoId === tecnico.id &&
-                p.semanaId === semanaActiva.id &&
-                p.estado === "enviado"
-            );
-            actividades = plan?.actividades || [];
-          }
-        } else if (periodo === "mes") {
-          const mesActual = new Date().getMonth();
-          actividades = datos.planificaciones
-            .filter((p) => p.tecnicoId === tecnico.id && p.estado === "enviado")
-            .flatMap((p) =>
-              (p.actividades || []).filter((a) => {
-                const fechaActividad = new Date(a.fecha);
-                return fechaActividad.getMonth() === mesActual;
-              })
-            );
-        } else if (periodo === "año") {
-          // TRAE DE TODAS LAS SEMANAS DEL AÑO
-          actividades = datos.planificaciones
-            .filter((p) => p.tecnicoId === tecnico.id && p.estado === "enviado")
-            .flatMap((p) => p.actividades || [])
-            .filter((a) => {
-              const fechaActividad = new Date(a.fecha);
-              return fechaActividad.getFullYear() === new Date().getFullYear();
-            });
-        }
+  const comparativasComunidadesFiltradas = comparativasComunidades.filter((c) => {
+    const filtroTecnicoOk =
+      filtroTecnico === "todos"
+        ? true
+        : datos.usuarios.find((u) => u.id === filtroTecnico)?.nombre === c.tecnico;
 
-        return {
-          tecnico,
-          actividades: actividades.sort((a, b) => {
-            const fechaA = new Date(a.fecha).getTime();
-            const fechaB = new Date(b.fecha).getTime();
-            return fechaA - fechaB;
-          }),
-        };
-      })
-      .filter((a) => a.actividades.length > 0);
-  }, [datos.planificaciones, datos.usuarios, periodo, semanaActiva]);
+    const filtroComunidadOk =
+      filtroEntidad === "todos" ? true : c.comunidadId === filtroEntidad;
+
+    return filtroTecnicoOk && filtroComunidadOk;
+  });
 
   if (datos.loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
+      <div className="flex items-center justify-center min-h-screen bg-slate-50">
         <div className="text-center space-y-4">
           <div className="animate-spin text-4xl">⏳</div>
-          <p className="text-gray-600 font-medium">Cargando reportes...</p>
+          <p className="text-slate-600 font-medium">Cargando reportes...</p>
         </div>
       </div>
     );
@@ -1997,109 +825,112 @@ export default function ReportesInstitucionales() {
 
   if (datos.error) {
     return (
-      <div className="p-6">
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+      <div className="p-6 bg-slate-50 min-h-screen">
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4">
           <p className="text-red-800 font-semibold">Error: {datos.error}</p>
         </div>
       </div>
     );
   }
 
-  const tecnicosYAdmins = datos.usuarios.filter(
-    (u) => u.rol === "tecnico" || u.rol === "admin"
-  );
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-6">
+    <div className="min-h-screen bg-slate-50 p-6">
       <div className="max-w-7xl mx-auto space-y-8">
         {/* Encabezado */}
-        <div>
-          <h1 className="text-4xl font-bold text-gray-900">
-            📊 Reportes Institucionales
-          </h1>
-          <p className="text-gray-600 mt-2">
-            Análisis detallado de datos e información del sistema
-          </p>
+        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+          <div>
+            <h1 className="text-4xl font-bold text-slate-900">
+              📊 Reportes Institucionales
+            </h1>
+            <p className="text-slate-600 mt-2">
+              Vista institucional consolidada por asignación actual e histórico operativo.
+            </p>
+            {semanaActiva && (
+              <p className="text-sm text-slate-500 mt-2">
+                Semana activa: {semanaActiva.fechaInicio} al {semanaActiva.fechaFin}
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {[
+              { id: "resumen", label: "📈 Resumen" },
+              { id: "comparativas", label: "🔄 Comparativas" },
+              { id: "tecnicos", label: "👨‍💼 Técnicos" },
+              { id: "comunidades", label: "🏘️ Comunidades" },
+              { id: "metas", label: "🎯 Metas" },
+              { id: "alertas", label: "⚠️ Alertas" },
+              { id: "exportaciones", label: "📄 Exportaciones" },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() =>
+                  setTabActivo(
+                    tab.id as
+                      | "resumen"
+                      | "comparativas"
+                      | "tecnicos"
+                      | "comunidades"
+                      | "metas"
+                      | "alertas"
+                      | "exportaciones"
+                  )
+                }
+                className={`px-4 py-2 rounded-xl font-semibold transition ${
+                  tabActivo === tab.id
+                    ? "bg-blue-600 text-white"
+                    : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        {/* KPIs Resumen */}
+        {/* KPIs */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <KPICard
-            titulo="Actividades"
-            valor={estadisticas.actividades}
-            icono="📋"
+            titulo="Técnicos"
+            valor={estadisticas.tecnicos}
+            icono="👨‍💼"
             color="bg-blue-600"
           />
           <KPICard
-            titulo="Asistencia Promedio"
-            valor={`${estadisticas.asistencia}%`}
-            icono="📊"
+            titulo="Actividades Históricas"
+            valor={estadisticas.actividades}
+            icono="📋"
             color="bg-green-600"
           />
           <KPICard
-            titulo="Participantes Totales"
+            titulo="Participantes Activos"
             valor={estadisticas.participantes}
             icono="👥"
             color="bg-purple-600"
           />
           <KPICard
-            titulo="Cumplimiento General"
-            valor={`${estadisticas.cumplimiento}%`}
-            icono="✅"
+            titulo="Asistencia Promedio"
+            valor={`${estadisticas.asistencia}%`}
+            icono="📊"
             color="bg-orange-600"
           />
         </div>
 
-        {/* Tabs */}
-        <div className="flex flex-wrap gap-2 bg-white rounded-lg shadow-md p-4 overflow-x-auto">
-          {[
-            { id: "participantes", label: "👥 Participantes" },
-            { id: "agenda", label: "📅 Agenda" },
-            { id: "resumen", label: "📈 Resumen Ejecutivo" },
-            { id: "comparativas", label: "🔄 Comparativas" },
-            { id: "tecnicos", label: "👨‍💼 Técnicos" },
-            { id: "comunidades", label: "🏘️ Comunidades" },
-            { id: "metas", label: "🎯 Metas" },
-            { id: "alertas", label: "⚠️ Alertas" },
-          ].map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() =>
-                setTabActivo(
-                  tab.id as
-                    | "participantes"
-                    | "agenda"
-                    | "resumen"
-                    | "comparativas"
-                    | "tecnicos"
-                    | "comunidades"
-                    | "metas"
-                    | "alertas"
-                )
-              }
-              className={`px-4 py-2 rounded-lg font-semibold transition whitespace-nowrap ${
-                tabActivo === tab.id
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-200 text-gray-800 hover:bg-gray-300"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {/* FILTROS SOLO PARA ALERTAS Y COMUNIDADES */}
-        {(tabActivo === "alertas" || tabActivo === "comunidades") && (
-          <div className="bg-white rounded-lg shadow-md p-4">
+        {/* Filtros generales */}
+        {(tabActivo === "tecnicos" || tabActivo === "comunidades" || tabActivo === "alertas") && (
+          <Panel
+            titulo="Filtros"
+            subtitle="Aplica filtros para enfocar el análisis."
+          >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Filtrar por Técnico
+                <label className="block text-sm font-semibold text-slate-700 mb-2">
+                  Técnico
                 </label>
                 <select
                   value={filtroTecnico}
                   onChange={(e) => setFiltroTecnico(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
+                  className="w-full border border-slate-300 rounded-xl p-3 focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="todos">Todos</option>
                   {tecnicosYAdmins.map((t) => (
@@ -2111,13 +942,13 @@ export default function ReportesInstitucionales() {
               </div>
 
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Filtrar por Comunidad
+                <label className="block text-sm font-semibold text-slate-700 mb-2">
+                  Comunidad
                 </label>
                 <select
                   value={filtroEntidad}
                   onChange={(e) => setFiltroEntidad(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
+                  className="w-full border border-slate-300 rounded-xl p-3 focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="todos">Todas</option>
                   {datos.comunidades.map((c) => (
@@ -2128,222 +959,118 @@ export default function ReportesInstitucionales() {
                 </select>
               </div>
             </div>
-          </div>
-        )}
-
-        {/* FILTRO DE PERÍODO SOLO PARA AGENDA */}
-        {tabActivo === "agenda" && (
-          <div className="bg-white rounded-lg shadow-md p-4">
-            <label className="block text-sm font-semibold text-gray-700 mb-2">
-              Período de Agenda
-            </label>
-            <select
-              value={periodo}
-              onChange={(e) =>
-                setPeriodo(e.target.value as "semana" | "mes" | "año")
-              }
-              className="w-full md:w-64 border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="semana">Semana Actual</option>
-              <option value="mes">Mes Actual</option>
-              <option value="año">Año Actual</option>
-            </select>
-          </div>
-        )}
-
-        {/* Contenido por Tab */}
-
-        {/* TAB: PARTICIPANTES */}
-        {tabActivo === "participantes" && (
-          <GestionParticipantes
-            participantes={datos.participantes}
-            comunidades={datos.comunidades}
-            usuarios={datos.usuarios}
-            onActualizar={() => datos.recargar()}
-          />
-        )}
-
-        {/* TAB: AGENDA */}
-        {tabActivo === "agenda" && (
-          <AgendaSemanalComponent
-            agendasTecnicos={agendasTecnicos}
-            semanaActiva={semanaActiva}
-            periodo={periodo}
-            seguimientos={datos.seguimientos}
-          />
-        )}
-
-        {/* TAB: RESUMEN EJECUTIVO */}
-        {tabActivo === "resumen" && (
-          <Panel titulo="📈 Resumen Ejecutivo">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-100 border-b-2 border-gray-300">
-                  <tr>
-                    <th className="px-6 py-3 text-left font-bold text-gray-900">
-                      Indicador
-                    </th>
-                    <th className="px-6 py-3 text-center font-bold text-gray-900">
-                      Semana
-                    </th>
-                    <th className="px-6 py-3 text-center font-bold text-gray-900">
-                      Mes
-                    </th>
-                    <th className="px-6 py-3 text-center font-bold text-gray-900">
-                      Año
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  <tr className="hover:bg-gray-50">
-                    <td className="px-6 py-4 font-semibold text-gray-900">
-                      Actividades
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      {estadisticas.actividades}
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      {estadisticas.actividades * 4}
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      {estadisticas.actividades * 52}
-                    </td>
-                  </tr>
-                  <tr className="hover:bg-gray-50">
-                    <td className="px-6 py-4 font-semibold text-gray-900">
-                      Asistencia Promedio
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full font-semibold">
-                        {estadisticas.asistencia}%
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full font-semibold">
-                        {estadisticas.asistencia}%
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full font-semibold">
-                        {estadisticas.asistencia}%
-                      </span>
-                    </td>
-                  </tr>
-                  <tr className="hover:bg-gray-50">
-                    <td className="px-6 py-4 font-semibold text-gray-900">
-                      Participantes
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      {Math.round(estadisticas.participantes / 52)}
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      {Math.round(estadisticas.participantes / 4)}
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      {estadisticas.participantes}
-                    </td>
-                  </tr>
-                  <tr className="hover:bg-gray-50 bg-gray-100 font-bold">
-                    <td className="px-6 py-4 text-gray-900">
-                      Cumplimiento
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full">
-                        {estadisticas.cumplimiento}%
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full">
-                        {estadisticas.cumplimiento}%
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full">
-                        {estadisticas.cumplimiento}%
-                      </span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
           </Panel>
         )}
 
-        {/* TAB: COMPARATIVAS */}
-        {tabActivo === "comparativas" && (
-          <div className="space-y-6">
-            <Panel titulo="🔄 Comparativa Técnico vs Técnico">
-              <TablaComparativaTecnicos
-                tecnicos={comparativasTecnicos}
-              />
+        {/* TAB RESUMEN */}
+        {tabActivo === "resumen" && (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <Panel
+              titulo="Top Técnicos"
+              subtitle="Participantes actuales y desempeño histórico."
+            >
+              <div className="space-y-4">
+                {comparativasTecnicos
+                  .slice()
+                  .sort((a, b) => b.participantes - a.participantes)
+                  .slice(0, 5)
+                  .map((t) => (
+                    <div key={t.tecnicoId} className="border border-slate-200 rounded-xl p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="font-bold text-slate-900">{t.tecnico}</h3>
+                        <span className={`px-3 py-1 rounded-full text-xs font-bold text-white ${getBadgeColor(t.cumplimiento)}`}>
+                          {t.cumplimiento}%
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                        <div>
+                          <p className="text-slate-500">Comunidades</p>
+                          <p className="font-bold">{t.comunidades}</p>
+                        </div>
+                        <div>
+                          <p className="text-slate-500">Participantes</p>
+                          <p className="font-bold">{t.participantes}</p>
+                        </div>
+                        <div>
+                          <p className="text-slate-500">Actividades</p>
+                          <p className="font-bold">{t.actividades}</p>
+                        </div>
+                        <div>
+                          <p className="text-slate-500">Asistencia</p>
+                          <p className="font-bold">{t.asistencia.toFixed(1)}%</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+              </div>
             </Panel>
 
-            <Panel titulo="🔄 Comparativa Comunidad vs Comunidad">
-              <TablaComparativaComunidades
-                comunidades={comparativasComunidades}
+            <Panel
+              titulo="Alertas Relevantes"
+              subtitle="Alertas prioritarias del sistema."
+            >
+              <TablaAlertas
+                alertas={alertas.slice(0, 6)}
+                filtroTecnico="todos"
+                filtroEntidad="todos"
+                usuarios={datos.usuarios}
+                comunidades={datos.comunidades}
               />
             </Panel>
           </div>
         )}
 
-        {/* TAB: TÉCNICOS */}
+        {/* TAB COMPARATIVAS */}
+        {tabActivo === "comparativas" && (
+          <div className="space-y-6">
+            <Panel
+              titulo="Comparativa entre Técnicos"
+              subtitle="Basada en comunidades actuales y producción histórica."
+            >
+              <TablaComparativaTecnicos tecnicos={comparativasTecnicos} />
+            </Panel>
+
+            <Panel
+              titulo="Comparativa entre Comunidades"
+              subtitle="Basada en participantes activos y actividades históricas por comunidad."
+            >
+              <TablaComparativaComunidades comunidades={comparativasComunidades} />
+            </Panel>
+          </div>
+        )}
+
+        {/* TAB TÉCNICOS */}
         {tabActivo === "tecnicos" && (
-          <Panel titulo="👨‍💼 Análisis Detallado por Técnico">
+          <Panel
+            titulo="Detalle por Técnico"
+            subtitle="Visualiza comunidades actuales, participantes y rendimiento histórico."
+          >
             <div className="space-y-6">
-              {comparativasTecnicos.map((tecnico) => (
-                <div
-                  key={tecnico.tecnicoId}
-                  className="border rounded-lg p-6 space-y-4"
-                >
+              {comparativasTecnicosFiltradas.map((t) => (
+                <div key={t.tecnicoId} className="border border-slate-200 rounded-2xl p-5 space-y-4">
                   <div className="flex justify-between items-center">
-                    <h3 className="text-lg font-bold text-gray-900">
-                      {tecnico.tecnico}
-                    </h3>
-                    <span
-                      className={`px-4 py-2 rounded-full text-sm font-bold text-white ${
-                        tecnico.cumplimiento >= 90
-                          ? "bg-green-600"
-                          : tecnico.cumplimiento >= 70
-                          ? "bg-yellow-600"
-                          : "bg-red-600"
-                      }`}
-                    >
-                      {tecnico.cumplimiento}% Cumplimiento
+                    <h3 className="text-lg font-bold text-slate-900">{t.tecnico}</h3>
+                    <span className={`px-4 py-2 rounded-full text-xs font-bold text-white ${getBadgeColor(t.cumplimiento)}`}>
+                      {t.cumplimiento}% cumplimiento
                     </span>
                   </div>
 
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="bg-blue-50 p-3 rounded-lg">
-                      <p className="text-xs text-blue-600 font-bold uppercase">
-                        Comunidades
-                      </p>
-                      <p className="text-2xl font-bold text-blue-900 mt-1">
-                        {tecnico.comunidades}
-                      </p>
+                    <div className="bg-blue-50 p-4 rounded-xl">
+                      <p className="text-xs uppercase font-bold text-blue-700">Comunidades</p>
+                      <p className="text-2xl font-bold text-blue-900 mt-1">{t.comunidades}</p>
                     </div>
-                    <div className="bg-purple-50 p-3 rounded-lg">
-                      <p className="text-xs text-purple-600 font-bold uppercase">
-                        Participantes
-                      </p>
-                      <p className="text-2xl font-bold text-purple-900 mt-1">
-                        {tecnico.participantes}
-                      </p>
+                    <div className="bg-purple-50 p-4 rounded-xl">
+                      <p className="text-xs uppercase font-bold text-purple-700">Participantes</p>
+                      <p className="text-2xl font-bold text-purple-900 mt-1">{t.participantes}</p>
                     </div>
-                    <div className="bg-green-50 p-3 rounded-lg">
-                      <p className="text-xs text-green-600 font-bold uppercase">
-                        Actividades
-                      </p>
-                      <p className="text-2xl font-bold text-green-900 mt-1">
-                        {tecnico.actividades}
-                      </p>
+                    <div className="bg-green-50 p-4 rounded-xl">
+                      <p className="text-xs uppercase font-bold text-green-700">Actividades</p>
+                      <p className="text-2xl font-bold text-green-900 mt-1">{t.actividades}</p>
                     </div>
-                    <div className="bg-orange-50 p-3 rounded-lg">
-                      <p className="text-xs text-orange-600 font-bold uppercase">
-                        Asistencia
-                      </p>
-                      <p className="text-2xl font-bold text-orange-900 mt-1">
-                        {tecnico.asistencia.toFixed(1)}%
-                      </p>
+                    <div className="bg-orange-50 p-4 rounded-xl">
+                      <p className="text-xs uppercase font-bold text-orange-700">Asistencia</p>
+                      <p className="text-2xl font-bold text-orange-900 mt-1">{t.asistencia.toFixed(1)}%</p>
                     </div>
                   </div>
                 </div>
@@ -2352,95 +1079,63 @@ export default function ReportesInstitucionales() {
           </Panel>
         )}
 
-        {/* TAB: COMUNIDADES CON FILTROS */}
+        {/* TAB COMUNIDADES */}
         {tabActivo === "comunidades" && (
-          <Panel titulo="🏘️ Análisis Detallado por Comunidad">
+          <Panel
+            titulo="Detalle por Comunidad"
+            subtitle="Análisis actual por comunidad y técnico responsable."
+          >
             <div className="space-y-6">
-              {comparativasComunidades
-                .filter(
-                  (com) =>
-                    filtroTecnico === "todos" ||
-                    datos.usuarios.find((u) => u.id === filtroTecnico)?.nombre ===
-                      com.tecnico
-                )
-                .filter(
-                  (com) =>
-                    filtroEntidad === "todos" ||
-                    datos.comunidades.find((c) => c.id === filtroEntidad)?.nombre ===
-                      com.comunidad
-                )
-                .map((comunidad, idx) => (
-                  <div
-                    key={idx}
-                    className="border rounded-lg p-6 space-y-4"
-                  >
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <h3 className="text-lg font-bold text-gray-900">
-                          {comunidad.comunidad}
-                        </h3>
-                        <p className="text-sm text-gray-600 mt-1">
-                          Técnico:{" "}
-                          <span className="font-semibold">
-                            {comunidad.tecnico}
-                          </span>
-                        </p>
-                      </div>
-                      <span
-                        className={`px-4 py-2 rounded-full text-sm font-bold text-white ${
-                          comunidad.asistencia >= 80
-                            ? "bg-green-600"
-                            : comunidad.asistencia >= 60
-                            ? "bg-yellow-600"
-                            : "bg-red-600"
-                        }`}
-                      >
-                        {comunidad.asistencia.toFixed(1)}%
-                      </span>
+              {comparativasComunidadesFiltradas.map((c) => (
+                <div key={c.comunidadId} className="border border-slate-200 rounded-2xl p-5 space-y-4">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <h3 className="text-lg font-bold text-slate-900">{c.comunidad}</h3>
+                      <p className="text-sm text-slate-500 mt-1">
+                        Técnico actual: <span className="font-semibold">{c.tecnico}</span>
+                      </p>
                     </div>
+                    <span className={`px-4 py-2 rounded-full text-xs font-bold text-white ${getBadgeColor(c.asistencia)}`}>
+                      {c.asistencia.toFixed(1)}%
+                    </span>
+                  </div>
 
-                    <div className="grid grid-cols-3 gap-4">
-                      <div className="bg-blue-50 p-3 rounded-lg">
-                        <p className="text-xs text-blue-600 font-bold uppercase">
-                          Participantes
-                        </p>
-                        <p className="text-2xl font-bold text-blue-900 mt-1">
-                          {comunidad.participantes}
-                        </p>
-                      </div>
-                      <div className="bg-green-50 p-3 rounded-lg">
-                        <p className="text-xs text-green-600 font-bold uppercase">
-                          Actividades
-                        </p>
-                        <p className="text-2xl font-bold text-green-900 mt-1">
-                          {comunidad.actividades}
-                        </p>
-                      </div>
-                      <div className="bg-purple-50 p-3 rounded-lg">
-                        <p className="text-xs text-purple-600 font-bold uppercase">
-                          Asistencia
-                        </p>
-                        <p className="text-2xl font-bold text-purple-900 mt-1">
-                          {comunidad.asistencia.toFixed(1)}%
-                        </p>
-                      </div>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="bg-blue-50 p-4 rounded-xl">
+                      <p className="text-xs uppercase font-bold text-blue-700">Participantes</p>
+                      <p className="text-2xl font-bold text-blue-900 mt-1">{c.participantes}</p>
+                    </div>
+                    <div className="bg-green-50 p-4 rounded-xl">
+                      <p className="text-xs uppercase font-bold text-green-700">Actividades</p>
+                      <p className="text-2xl font-bold text-green-900 mt-1">{c.actividades}</p>
+                    </div>
+                    <div className="bg-purple-50 p-4 rounded-xl">
+                      <p className="text-xs uppercase font-bold text-purple-700">Asistencia</p>
+                      <p className="text-2xl font-bold text-purple-900 mt-1">{c.asistencia.toFixed(1)}%</p>
                     </div>
                   </div>
-                ))}
+                </div>
+              ))}
             </div>
           </Panel>
         )}
 
-        {/* TAB: METAS */}
+        {/* TAB METAS */}
         {tabActivo === "metas" && (
-          <Panel titulo="🎯 Metas y Objetivos">
+          <Panel
+            titulo="Metas por Técnico"
+            subtitle="Meta calculada con participantes activos en comunidades actualmente asignadas."
+          >
             <TablaMetas metas={metas} />
           </Panel>
         )}
 
-        {/* TAB: ALERTAS CON FILTROS */}
+        {/* TAB ALERTAS */}
         {tabActivo === "alertas" && (
-          <Panel titulo="⚠️ Alertas y Anomalías">
+          <Panel
+            titulo="Alertas Institucionales"
+            subtitle="Filtradas por técnico y comunidad."
+          >
             <TablaAlertas
               alertas={alertas}
               filtroTecnico={filtroTecnico}
@@ -2451,13 +1146,14 @@ export default function ReportesInstitucionales() {
           </Panel>
         )}
 
-        {/* GENERADOR DE PDFs AL FINAL */}
-        <GeneradorPDFs
-          datos={datos}
-          comparativasTecnicos={comparativasTecnicos}
-          semanaActiva={semanaActiva}
-          seguimientos={datos.seguimientos}
-        />
+        {/* TAB EXPORTACIONES */}
+        {tabActivo === "exportaciones" && (
+          <GeneradorPDFs
+            comparativasTecnicos={comparativasTecnicos}
+            comunidades={datos.comunidades}
+            participantes={datos.participantes}
+          />
+        )}
       </div>
     </div>
   );

@@ -1,22 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import {
   collection,
+  getDocs,
   query,
   where,
-  getDocs,
-  doc,
-  getDoc,
 } from "firebase/firestore";
 import { getComunidadesByTecnico } from "@/lib/getComunidadesByTecnico";
 import { getSemanaActiva } from "@/lib/getSemanaActiva";
 import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
 
 // ============ TIPOS ============
 interface Comunidad {
@@ -32,6 +28,7 @@ interface Participante {
   apellidos: string;
   edad: number;
   genero: "M" | "F" | "O";
+  estado?: string;
   [key: string]: any;
 }
 
@@ -50,6 +47,7 @@ interface Semana {
   id: string;
   fechaInicio: string;
   fechaFin: string;
+  [key: string]: any;
 }
 
 interface ActividadPlanificada {
@@ -62,6 +60,7 @@ interface ActividadPlanificada {
   horario: string;
   objetivoEspecifico: string;
   productoEsperado: string;
+  [key: string]: any;
 }
 
 interface EventoGlobal {
@@ -75,6 +74,7 @@ interface EventoGlobal {
   estado?: string;
   confirmado?: boolean;
   createdAt?: any;
+  [key: string]: any;
 }
 
 interface EventoConfirmado extends EventoGlobal {
@@ -88,10 +88,6 @@ function useCargarComunidades(userId: string | undefined) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    cargar();
-  }, [userId]);
-
   const cargar = useCallback(async () => {
     if (!userId) return;
 
@@ -101,7 +97,7 @@ function useCargarComunidades(userId: string | undefined) {
       const data = await getComunidadesByTecnico(userId);
       setComunidades(data.sort((a, b) => a.nombre.localeCompare(b.nombre)));
     } catch (err) {
-      const mensaje = err instanceof Error ? err.message : "Error al cargar";
+      const mensaje = err instanceof Error ? err.message : "Error al cargar comunidades";
       setError(mensaje);
       console.error(err);
     } finally {
@@ -109,30 +105,55 @@ function useCargarComunidades(userId: string | undefined) {
     }
   }, [userId]);
 
+  useEffect(() => {
+    cargar();
+  }, [cargar]);
+
   return { comunidades, loading, error, recargar: cargar };
 }
 
 // ============ HOOK: Cargar datos de asistencia ============
-function useDatosAsistencia(userId: string | undefined, comunidadId: string) {
+function useDatosAsistencia(comunidadId: string) {
   const [participantes, setParticipantes] = useState<AsistenciaParticipante[]>([]);
   const [fechas, setFechas] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (comunidadId && userId) {
-      cargar();
+  const normalizarFecha = (valor: any): string | null => {
+    if (!valor) return null;
+
+    if (typeof valor === "string") {
+      const texto = valor.trim();
+
+      if (/^\d{4}-\d{2}-\d{2}$/.test(texto)) {
+        return texto;
+      }
+
+      const fecha = new Date(texto);
+      if (!isNaN(fecha.getTime())) {
+        return fecha.toISOString().split("T")[0];
+      }
     }
-  }, [comunidadId, userId]);
+
+    if (valor instanceof Date && !isNaN(valor.getTime())) {
+      return valor.toISOString().split("T")[0];
+    }
+
+    return null;
+  };
 
   const cargar = useCallback(async () => {
-    if (!userId || !comunidadId) return;
+    if (!comunidadId) {
+      setParticipantes([]);
+      setFechas([]);
+      return;
+    }
 
     try {
       setLoading(true);
       setError(null);
 
-      // 1. Obtener participantes activos de la comunidad
+      // 1. Participantes activos de la comunidad
       const partQuery = query(
         collection(db, "participantes"),
         where("comunidadId", "==", comunidadId),
@@ -142,75 +163,79 @@ function useDatosAsistencia(userId: string | undefined, comunidadId: string) {
       const partSnap = await getDocs(partQuery);
       const participantesMap = new Map<string, Participante>();
 
-      partSnap.forEach((doc) => {
-        participantesMap.set(doc.id, {
-          id: doc.id,
-          ...doc.data(),
+      partSnap.forEach((docSnap) => {
+        participantesMap.set(docSnap.id, {
+          id: docSnap.id,
+          ...docSnap.data(),
         } as Participante);
       });
 
-      // 2. Obtener seguimientos del técnico
+      if (participantesMap.size === 0) {
+        setParticipantes([]);
+        setFechas([]);
+        return;
+      }
+
+      // 2. Todos los seguimientos enviados
       const segQuery = query(
         collection(db, "seguimientos"),
-        where("tecnicoId", "==", userId),
         where("estado", "==", "enviado")
       );
 
       const segSnap = await getDocs(segQuery);
 
       const fechasSet = new Set<string>();
-      const asistenciasMap = new Map<
-        string,
-        { [fecha: string]: boolean }
-      >();
+      const asistenciasMap = new Map<string, { [fecha: string]: boolean }>();
 
-      // Inicializar asistencias vacías para todos los participantes
       participantesMap.forEach((p) => {
         asistenciasMap.set(p.id, {});
       });
 
-      // Procesar seguimientos
-      for (const docSeg of segSnap.docs) {
-        const data = docSeg.data();
+      for (const segDoc of segSnap.docs) {
+        const data = segDoc.data();
+        const actividades = Array.isArray(data.actividadesRegulares)
+          ? data.actividadesRegulares
+          : [];
 
-        if (!data.actividadesRegulares) continue;
+        for (const actividad of actividades) {
+          const mismaComunidad = actividad?.comunidadId === comunidadId;
+          const realizada = actividad?.estadoActividad === "realizada";
+          const fechaNormalizada = normalizarFecha(actividad?.fecha);
+          const asistentesIds = Array.isArray(actividad?.asistentesIds)
+            ? actividad.asistentesIds
+            : [];
 
-        for (const actividad of data.actividadesRegulares) {
-          // Solo procesar actividades de esta comunidad que fueron realizadas
-          if (
-            actividad.comunidadId === comunidadId &&
-            actividad.estadoActividad === "realizada" &&
-            actividad.fecha
-          ) {
-            fechasSet.add(actividad.fecha);
-
-            const asistentesIds = actividad.asistentesIds || [];
-
-            // Marcar asistencia para los que asistieron
-            asistentesIds.forEach((id: string) => {
-              if (asistenciasMap.has(id)) {
-                const asistencias = asistenciasMap.get(id) || {};
-                asistencias[actividad.fecha] = true;
-                asistenciasMap.set(id, asistencias);
-              }
-            });
-
-            // Marcar inasistencia para los que no asistieron
-            participantesMap.forEach((p) => {
-              if (!asistentesIds.includes(p.id)) {
-                const asistencias = asistenciasMap.get(p.id) || {};
-                if (!(actividad.fecha in asistencias)) {
-                  asistencias[actividad.fecha] = false;
-                }
-                asistenciasMap.set(p.id, asistencias);
-              }
-            });
+          if (!mismaComunidad || !realizada || !fechaNormalizada) {
+            continue;
           }
+
+          fechasSet.add(fechaNormalizada);
+
+          // Presentes
+          asistentesIds.forEach((id: string) => {
+            if (participantesMap.has(id)) {
+              const actual = asistenciasMap.get(id) || {};
+              actual[fechaNormalizada] = true;
+              asistenciasMap.set(id, actual);
+            }
+          });
+
+          // Ausentes
+          participantesMap.forEach((p) => {
+            if (!asistentesIds.includes(p.id)) {
+              const actual = asistenciasMap.get(p.id) || {};
+              if (!(fechaNormalizada in actual)) {
+                actual[fechaNormalizada] = false;
+                asistenciasMap.set(p.id, actual);
+              }
+            }
+          });
         }
       }
 
-      // 3. Construir array de participantes con asistencias
-      const fechasOrdenadas = Array.from(fechasSet).sort();
+      const fechasOrdenadas = Array.from(fechasSet).sort(
+        (a, b) => new Date(a).getTime() - new Date(b).getTime()
+      );
       setFechas(fechasOrdenadas);
 
       const participantesConAsistencia = Array.from(participantesMap.values())
@@ -222,17 +247,25 @@ function useDatosAsistencia(userId: string | undefined, comunidadId: string) {
           genero: p.genero,
           asistencias: asistenciasMap.get(p.id) || {},
         }))
-        .sort((a, b) => a.nombres.localeCompare(b.nombres));
+        .sort((a, b) => {
+          const nombreA = `${a.nombres} ${a.apellidos}`.toLowerCase();
+          const nombreB = `${b.nombres} ${b.apellidos}`.toLowerCase();
+          return nombreA.localeCompare(nombreB);
+        });
 
       setParticipantes(participantesConAsistencia);
     } catch (err) {
-      const mensaje = err instanceof Error ? err.message : "Error al cargar";
+      const mensaje = err instanceof Error ? err.message : "Error al cargar asistencia";
       setError(mensaje);
-      console.error(err);
+      console.error("Error cargando asistencia:", err);
     } finally {
       setLoading(false);
     }
-  }, [userId, comunidadId]);
+  }, [comunidadId]);
+
+  useEffect(() => {
+    cargar();
+  }, [cargar]);
 
   return { participantes, fechas, loading, error, recargar: cargar };
 }
@@ -244,10 +277,6 @@ function useCargaAgendaSemanal(userId: string | undefined) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    cargar();
-  }, [userId]);
-
   const cargar = useCallback(async () => {
     if (!userId) return;
 
@@ -255,7 +284,6 @@ function useCargaAgendaSemanal(userId: string | undefined) {
       setLoading(true);
       setError(null);
 
-      // 1. Obtener semana activa
       const semana = await getSemanaActiva();
       if (!semana) {
         setError("No hay semana activa");
@@ -263,7 +291,6 @@ function useCargaAgendaSemanal(userId: string | undefined) {
       }
       setSemanaActiva(semana);
 
-      // 2. Obtener planificación enviada
       const planQuery = query(
         collection(db, "planificaciones"),
         where("semanaId", "==", semana.id),
@@ -287,13 +314,17 @@ function useCargaAgendaSemanal(userId: string | undefined) {
         setActividades([]);
       }
     } catch (err) {
-      const mensaje = err instanceof Error ? err.message : "Error al cargar";
+      const mensaje = err instanceof Error ? err.message : "Error al cargar agenda";
       setError(mensaje);
       console.error(err);
     } finally {
       setLoading(false);
     }
   }, [userId]);
+
+  useEffect(() => {
+    cargar();
+  }, [cargar]);
 
   return { actividades, semanaActiva, loading, error, recargar: cargar };
 }
@@ -305,10 +336,6 @@ function useCargaEventosGlobales(userId: string | undefined) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    cargar();
-  }, [userId]);
-
   const cargar = useCallback(async () => {
     if (!userId) return;
 
@@ -316,7 +343,7 @@ function useCargaEventosGlobales(userId: string | undefined) {
       setLoading(true);
       setError(null);
 
-      // 1. Obtener respuestas del técnico
+      // 1. Respuestas del técnico
       const respuestasQuery = query(
         collection(db, "respuestasEventos"),
         where("tecnicoId", "==", userId)
@@ -325,59 +352,62 @@ function useCargaEventosGlobales(userId: string | undefined) {
       const respuestasSnap = await getDocs(respuestasQuery);
       const respuestasData = respuestasSnap.docs.map((d) => d.data());
 
-      // 2. Obtener todos los eventos globales
+      // 2. Todos los eventos globales
       const eventosSnap = await getDocs(collection(db, "eventosGlobales"));
       const todosEventos = eventosSnap.docs.map((d) => ({
         id: d.id,
         ...d.data(),
       } as EventoGlobal));
 
-      // 3. Mapear eventos confirmados
       const hoy = new Date();
       hoy.setHours(0, 0, 0, 0);
 
-      const eventosConfirm: EventoConfirmado[] = [];
-      const eventosHist: EventoConfirmado[] = [];
+      const proximos: EventoConfirmado[] = [];
+      const historico: EventoConfirmado[] = [];
 
       for (const evento of todosEventos) {
         const respuesta = respuestasData.find((r) => r.eventoId === evento.id);
+        if (!respuesta) continue;
 
-        if (respuesta) {
-          const fechaEvento = new Date(evento.fecha);
-          fechaEvento.setHours(0, 0, 0, 0);
+        const fechaEvento = new Date(evento.fecha);
+        fechaEvento.setHours(0, 0, 0, 0);
 
-          const eventoConfirmado: EventoConfirmado = {
-            ...evento,
-            confirmado: respuesta.confirmado || respuesta.tipoRespuesta !== undefined,
-            tipoRespuesta: respuesta.tipoRespuesta || "reunion",
-          };
+        const eventoConfirmado: EventoConfirmado = {
+          ...evento,
+          confirmado: respuesta.confirmado ?? true,
+          tipoRespuesta: (respuesta.tipoRespuesta || "reunion") as
+            | "reunion"
+            | "encuentro",
+        };
 
-          if (fechaEvento >= hoy) {
-            eventosConfirm.push(eventoConfirmado);
-          } else {
-            eventosHist.push(eventoConfirmado);
-          }
+        if (fechaEvento >= hoy) {
+          proximos.push(eventoConfirmado);
+        } else {
+          historico.push(eventoConfirmado);
         }
       }
 
-      // Ordenar por fecha
-      eventosConfirm.sort(
+      proximos.sort(
         (a, b) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime()
       );
-      eventosHist.sort(
+      historico.sort(
         (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
       );
 
-      setEventosConfirmados(eventosConfirm);
-      setEventosHistorico(eventosHist);
+      setEventosConfirmados(proximos);
+      setEventosHistorico(historico);
     } catch (err) {
-      const mensaje = err instanceof Error ? err.message : "Error al cargar";
+      const mensaje = err instanceof Error ? err.message : "Error al cargar eventos";
       setError(mensaje);
       console.error(err);
     } finally {
       setLoading(false);
     }
   }, [userId]);
+
+  useEffect(() => {
+    cargar();
+  }, [cargar]);
 
   return { eventosConfirmados, eventosHistorico, loading, error, recargar: cargar };
 }
@@ -399,18 +429,14 @@ function CardComunidad({
   return (
     <button
       onClick={onClick}
-      className={`w-full p-4 rounded-lg shadow-md transition transform hover:scale-105 ${
+      className={`w-full p-4 rounded-lg shadow-md transition transform hover:scale-[1.02] ${
         seleccionada
           ? "bg-green-600 text-white border-2 border-green-800"
           : "bg-white text-gray-900 border-2 border-gray-300 hover:border-green-500"
       }`}
     >
       <h3 className="text-lg font-bold">{comunidad.nombre}</h3>
-      <p
-        className={`text-sm ${
-          seleccionada ? "text-green-100" : "text-gray-600"
-        }`}
-      >
+      <p className={`text-sm ${seleccionada ? "text-green-100" : "text-gray-600"}`}>
         👥 {numeroPar} participantes
       </p>
     </button>
@@ -435,13 +461,12 @@ function TablaAsistencia({
 }: TablaAsistenciaProps) {
   const calcularAsistencias = (asistencias: { [fecha: string]: boolean }) => {
     const total = Object.values(asistencias).length;
-    const presentes = Object.values(asistencias).filter((v) => v).length;
+    const presentes = Object.values(asistencias).filter(Boolean).length;
     return { presentes, total };
   };
 
   const estadisticas = useMemo(() => {
-    const porFecha: { [fecha: string]: { presentes: number; total: number } } =
-      {};
+    const porFecha: { [fecha: string]: { presentes: number; total: number } } = {};
     const porGenero: { M: number; F: number; O: number } = { M: 0, F: 0, O: 0 };
 
     fechas.forEach((fecha) => {
@@ -464,7 +489,10 @@ function TablaAsistencia({
 
   const formatearFecha = (fecha: string) => {
     const date = new Date(fecha + "T00:00:00");
-    return date.toLocaleDateString("es-ES", { day: "numeric", month: "short" });
+    return date.toLocaleDateString("es-ES", {
+      day: "2-digit",
+      month: "short",
+    });
   };
 
   if (participantes.length === 0) {
@@ -477,44 +505,35 @@ function TablaAsistencia({
 
   return (
     <div className="space-y-6">
-      {/* Estadísticas */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+      {/* Resumen */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <div className="bg-blue-100 rounded-lg p-4 text-center">
-          <p className="text-gray-700 text-sm font-semibold">
-            Total Participantes
-          </p>
-          <p className="text-2xl font-bold text-blue-800">
-            {participantes.length}
-          </p>
+          <p className="text-gray-700 text-sm font-semibold">Total Participantes</p>
+          <p className="text-2xl font-bold text-blue-800">{participantes.length}</p>
         </div>
-        <div className="bg-blue-100 rounded-lg p-4 text-center">
+
+        <div className="bg-sky-100 rounded-lg p-4 text-center">
           <p className="text-gray-700 text-sm font-semibold">👨 Masculino</p>
-          <p className="text-2xl font-bold text-blue-800">
-            {estadisticas.porGenero.M}
-          </p>
+          <p className="text-2xl font-bold text-sky-800">{estadisticas.porGenero.M}</p>
         </div>
+
         <div className="bg-pink-100 rounded-lg p-4 text-center">
           <p className="text-gray-700 text-sm font-semibold">👩 Femenino</p>
-          <p className="text-2xl font-bold text-pink-800">
-            {estadisticas.porGenero.F}
-          </p>
+          <p className="text-2xl font-bold text-pink-800">{estadisticas.porGenero.F}</p>
         </div>
+
         <div className="bg-purple-100 rounded-lg p-4 text-center">
-          <p className="text-gray-700 text-sm font-semibold">
-            Semanas Visitadas
-          </p>
+          <p className="text-gray-700 text-sm font-semibold">Fechas Registradas</p>
           <p className="text-2xl font-bold text-purple-800">{fechas.length}</p>
         </div>
+
         <div className="bg-green-100 rounded-lg p-4 text-center">
-          <p className="text-gray-700 text-sm font-semibold">
-            Asistencia Promedio
-          </p>
+          <p className="text-gray-700 text-sm font-semibold">Asistencia Promedio</p>
           <p className="text-2xl font-bold text-green-800">
             {fechas.length > 0
               ? Math.round(
                   (Object.values(estadisticas.porFecha).reduce(
-                    (sum, f) =>
-                      sum + (f.total > 0 ? (f.presentes / f.total) * 100 : 0),
+                    (sum, f) => sum + (f.total > 0 ? (f.presentes / f.total) * 100 : 0),
                     0
                   ) /
                     fechas.length) *
@@ -526,145 +545,145 @@ function TablaAsistencia({
         </div>
       </div>
 
-      {/* Botón Exportar */}
-      <div className="flex justify-end">
+      {/* Cabecera */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h4 className="text-lg font-bold text-gray-900">
+            Registro de asistencia - {comunidadNombre}
+          </h4>
+          <p className="text-sm text-gray-500">
+            Fechas registradas desde el módulo de seguimiento.
+          </p>
+        </div>
+
         <button
           onClick={onExportar}
           disabled={procesando}
-          className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white px-6 py-3 rounded-lg font-semibold transition flex items-center gap-2"
+          className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white px-6 py-3 rounded-lg font-semibold transition flex items-center justify-center gap-2"
         >
           📥 Exportar Excel
         </button>
       </div>
 
       {/* Tabla */}
-      <div className="bg-white rounded-lg shadow-md overflow-x-auto">
-        <table className="w-full border-collapse">
-          <thead className="bg-gradient-to-r from-green-600 to-green-700 text-white sticky top-0">
-            <tr>
-              <th className="border border-gray-300 px-4 py-3 text-left font-bold sticky left-0 bg-green-600 z-20">
-                N°
-              </th>
-              <th className="border border-gray-300 px-4 py-3 text-left font-bold sticky left-12 bg-green-600 z-20 w-40">
-                Nombres
-              </th>
-              <th className="border border-gray-300 px-4 py-3 text-left font-bold sticky left-52 bg-green-600 z-20 w-40">
-                Apellidos
-              </th>
-              <th className="border border-gray-300 px-4 py-3 text-center font-bold w-20">
-                Edad
-              </th>
-              <th className="border border-gray-300 px-4 py-3 text-center font-bold w-16">
-                Género
-              </th>
-
-              {/* Fechas */}
-              {fechas.map((fecha) => (
-                <th
-                  key={fecha}
-                  className="border border-gray-300 px-3 py-3 text-center font-bold bg-green-600 whitespace-nowrap text-sm"
-                  title={fecha}
-                >
-                  {formatearFecha(fecha)}
+      <div className="bg-white rounded-lg shadow-md overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full table-auto border-collapse text-sm">
+            <thead className="bg-gradient-to-r from-green-600 to-green-700 text-white">
+              <tr>
+                <th className="border border-green-500 px-3 py-3 text-center font-bold min-w-[60px]">
+                  N°
                 </th>
-              ))}
+                <th className="border border-green-500 px-4 py-3 text-left font-bold min-w-[180px]">
+                  Nombres
+                </th>
+                <th className="border border-green-500 px-4 py-3 text-left font-bold min-w-[180px]">
+                  Apellidos
+                </th>
+                <th className="border border-green-500 px-3 py-3 text-center font-bold min-w-[70px]">
+                  Edad
+                </th>
+                <th className="border border-green-500 px-3 py-3 text-center font-bold min-w-[90px]">
+                  Género
+                </th>
 
-              <th className="border border-gray-300 px-4 py-3 text-center font-bold bg-green-600 sticky right-0 z-20 w-24">
-                Total
-              </th>
-            </tr>
-          </thead>
+                {fechas.map((fecha) => (
+                  <th
+                    key={fecha}
+                    title={fecha}
+                    className="border border-green-500 px-2 py-3 text-center font-bold min-w-[78px] whitespace-nowrap"
+                  >
+                    {formatearFecha(fecha)}
+                  </th>
+                ))}
 
-          <tbody>
-            {participantes.map((p, index) => {
-              const { presentes, total } = calcularAsistencias(
-                p.asistencias
-              );
+                <th className="border border-green-500 px-3 py-3 text-center font-bold min-w-[90px]">
+                  Total
+                </th>
+              </tr>
+            </thead>
 
-              return (
-                <tr key={p.participanteId} className="hover:bg-gray-50 transition">
-                  <td className="border border-gray-300 px-4 py-2 font-semibold text-center sticky left-0 bg-white z-10">
-                    {index + 1}
-                  </td>
-                  <td className="border border-gray-300 px-4 py-2 font-semibold sticky left-12 bg-white z-10">
-                    {p.nombres}
-                  </td>
-                  <td className="border border-gray-300 px-4 py-2 sticky left-52 bg-white z-10">
-                    {p.apellidos}
-                  </td>
-                  <td className="border border-gray-300 px-4 py-2 text-center">
-                    {p.edad}
-                  </td>
-                  <td className="border border-gray-300 px-4 py-2 text-center font-semibold">
-                    {p.genero === "M" ? "👨" : p.genero === "F" ? "👩" : "⚪"}
-                  </td>
-
-                  {/* Asistencias */}
-                  {fechas.map((fecha) => (
-                    <td
-                      key={`${p.participanteId}-${fecha}`}
-                      className="border border-gray-300 px-3 py-2 text-center font-bold text-lg"
-                    >
-                      {p.asistencias[fecha] === true ? (
-                        <span className="text-green-600 bg-green-100 rounded px-2 py-1">
-                          1
-                        </span>
-                      ) : p.asistencias[fecha] === false ? (
-                        <span className="text-red-600 bg-red-100 rounded px-2 py-1">
-                          0
-                        </span>
-                      ) : (
-                        <span className="text-gray-400">—</span>
-                      )}
-                    </td>
-                  ))}
-
-                  <td className="border border-gray-300 px-4 py-2 text-center font-bold sticky right-0 bg-white z-10">
-                    <span
-                      className={`px-2 py-1 rounded text-sm font-semibold ${
-                        presentes > 0
-                          ? "bg-green-100 text-green-800"
-                          : "bg-gray-100 text-gray-800"
-                      }`}
-                    >
-                      {presentes}/{total}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-
-            {/* Fila de totales */}
-            <tr className="bg-gray-100 font-bold">
-              <td
-                colSpan={5}
-                className="border border-gray-300 px-4 py-3 text-right"
-              >
-                TOTAL ASISTENTES
-              </td>
-
-              {fechas.map((fecha) => {
-                const { presentes, total } = estadisticas.porFecha[fecha];
-                const porcentaje =
-                  total > 0 ? Math.round((presentes / total) * 100) : 0;
+            <tbody>
+              {participantes.map((p, index) => {
+                const { presentes, total } = calcularAsistencias(p.asistencias);
 
                 return (
-                  <td
-                    key={`total-${fecha}`}
-                    className="border border-gray-300 px-3 py-3 text-center"
-                  >
-                    <div className="font-bold text-lg">{presentes}</div>
-                    <div className="text-sm text-gray-600">{porcentaje}%</div>
-                  </td>
+                  <tr key={p.participanteId} className="hover:bg-gray-50 transition">
+                    <td className="border border-gray-200 px-3 py-3 text-center font-semibold">
+                      {index + 1}
+                    </td>
+                    <td className="border border-gray-200 px-4 py-3 font-semibold text-gray-900">
+                      {p.nombres}
+                    </td>
+                    <td className="border border-gray-200 px-4 py-3 text-gray-800">
+                      {p.apellidos}
+                    </td>
+                    <td className="border border-gray-200 px-3 py-3 text-center">
+                      {p.edad}
+                    </td>
+                    <td className="border border-gray-200 px-3 py-3 text-center font-semibold">
+                      {p.genero === "M" ? "👨" : p.genero === "F" ? "👩" : "⚪"}
+                    </td>
+
+                    {fechas.map((fecha) => (
+                      <td
+                        key={`${p.participanteId}-${fecha}`}
+                        className="border border-gray-200 px-2 py-3 text-center"
+                      >
+                        {p.asistencias[fecha] === true ? (
+                          <span className="inline-flex items-center justify-center min-w-[32px] px-2 py-1 rounded-md bg-green-100 text-green-700 font-bold">
+                            1
+                          </span>
+                        ) : p.asistencias[fecha] === false ? (
+                          <span className="inline-flex items-center justify-center min-w-[32px] px-2 py-1 rounded-md bg-red-100 text-red-700 font-bold">
+                            0
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                    ))}
+
+                    <td className="border border-gray-200 px-3 py-3 text-center">
+                      <span
+                        className={`inline-flex items-center justify-center min-w-[54px] px-3 py-1 rounded-md text-sm font-bold ${
+                          total > 0
+                            ? "bg-gray-100 text-gray-800"
+                            : "bg-gray-50 text-gray-500"
+                        }`}
+                      >
+                        {presentes}/{total}
+                      </span>
+                    </td>
+                  </tr>
                 );
               })}
 
-              <td className="border border-gray-300 px-4 py-3 text-center">
-                —
-              </td>
-            </tr>
-          </tbody>
-        </table>
+              <tr className="bg-gray-100 font-bold">
+                <td colSpan={5} className="border border-gray-300 px-4 py-3 text-right">
+                  TOTAL ASISTENTES
+                </td>
+
+                {fechas.map((fecha) => {
+                  const { presentes, total } = estadisticas.porFecha[fecha];
+                  const porcentaje = total > 0 ? Math.round((presentes / total) * 100) : 0;
+
+                  return (
+                    <td
+                      key={`total-${fecha}`}
+                      className="border border-gray-300 px-2 py-3 text-center"
+                    >
+                      <div className="font-bold text-base">{presentes}</div>
+                      <div className="text-xs text-gray-600">{porcentaje}%</div>
+                    </td>
+                  );
+                })}
+
+                <td className="border border-gray-300 px-3 py-3 text-center">—</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
@@ -711,66 +730,42 @@ function AgendaSemanal({ actividades, semanaActiva }: AgendaSemanalProps) {
             className="bg-white rounded-lg shadow-md p-5 border-l-4 border-blue-500 hover:shadow-lg transition"
           >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Lado izquierdo */}
               <div className="space-y-2">
                 <div>
-                  <p className="text-xs text-gray-500 uppercase font-semibold">
-                    Comunidad
-                  </p>
-                  <p className="text-lg font-bold text-gray-900">
-                    📍 {actividad.comunidadNombre}
-                  </p>
+                  <p className="text-xs text-gray-500 uppercase font-semibold">Comunidad</p>
+                  <p className="text-lg font-bold text-gray-900">📍 {actividad.comunidadNombre}</p>
                 </div>
 
                 <div>
-                  <p className="text-xs text-gray-500 uppercase font-semibold">
-                    Fecha y Hora
-                  </p>
-                  <p className="text-sm text-gray-700">
-                    📅 {formatearFecha(actividad.fecha)}
-                  </p>
-                  <p className="text-sm text-gray-700">
-                    🕐 {actividad.horario}
-                  </p>
+                  <p className="text-xs text-gray-500 uppercase font-semibold">Fecha y Hora</p>
+                  <p className="text-sm text-gray-700">📅 {formatearFecha(actividad.fecha)}</p>
+                  <p className="text-sm text-gray-700">🕐 {actividad.horario}</p>
                 </div>
 
                 <div>
-                  <p className="text-xs text-gray-500 uppercase font-semibold">
-                    Componente
-                  </p>
-                  <p className="text-sm font-medium text-gray-900">
-                    {actividad.componente}
-                  </p>
+                  <p className="text-xs text-gray-500 uppercase font-semibold">Componente</p>
+                  <p className="text-sm font-medium text-gray-900">{actividad.componente}</p>
                 </div>
               </div>
 
-              {/* Lado derecho */}
               <div className="space-y-2">
                 <div>
-                  <p className="text-xs text-gray-500 uppercase font-semibold">
-                    Actividad
-                  </p>
-                  <p className="text-sm text-gray-800">
-                    {actividad.actividad}
-                  </p>
+                  <p className="text-xs text-gray-500 uppercase font-semibold">Actividad</p>
+                  <p className="text-sm text-gray-800">{actividad.actividad}</p>
                 </div>
 
                 <div>
                   <p className="text-xs text-gray-500 uppercase font-semibold">
                     Objetivo Específico
                   </p>
-                  <p className="text-sm text-gray-800">
-                    {actividad.objetivoEspecifico}
-                  </p>
+                  <p className="text-sm text-gray-800">{actividad.objetivoEspecifico}</p>
                 </div>
 
                 <div>
                   <p className="text-xs text-gray-500 uppercase font-semibold">
                     Producto Esperado
                   </p>
-                  <p className="text-sm text-gray-800">
-                    {actividad.productoEsperado}
-                  </p>
+                  <p className="text-sm text-gray-800">{actividad.productoEsperado}</p>
                 </div>
               </div>
             </div>
@@ -830,7 +825,6 @@ function EventosGlobales({
 
   return (
     <div className="space-y-6">
-      {/* Eventos Confirmados (Próximos) */}
       <div>
         <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
           📅 Eventos Próximos ({eventosConfirmados.length})
@@ -850,12 +844,8 @@ function EventosGlobales({
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2">
-                      <span className="text-2xl">
-                        {getTipoIcono(evento.tipoEvento)}
-                      </span>
-                      <h4 className="text-lg font-bold text-gray-900">
-                        {evento.titulo}
-                      </h4>
+                      <span className="text-2xl">{getTipoIcono(evento.tipoEvento)}</span>
+                      <h4 className="text-lg font-bold text-gray-900">{evento.titulo}</h4>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-700">
@@ -883,9 +873,7 @@ function EventosGlobales({
                       evento.tipoEvento
                     )}`}
                   >
-                    {evento.tipoEvento === "tecnicos"
-                      ? "Reunión"
-                      : "Encuentro"}
+                    {evento.tipoEvento === "tecnicos" ? "Reunión" : "Encuentro"}
                   </span>
                 </div>
               </div>
@@ -894,7 +882,6 @@ function EventosGlobales({
         )}
       </div>
 
-      {/* Eventos Históricos */}
       <div>
         <button
           onClick={() => setMostrarHistorico(!mostrarHistorico)}
@@ -918,12 +905,8 @@ function EventosGlobales({
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1">
                       <div className="flex items-center gap-3 mb-2">
-                        <span className="text-2xl">
-                          {getTipoIcono(evento.tipoEvento)}
-                        </span>
-                        <h4 className="text-lg font-bold text-gray-900">
-                          {evento.titulo}
-                        </h4>
+                        <span className="text-2xl">{getTipoIcono(evento.tipoEvento)}</span>
+                        <h4 className="text-lg font-bold text-gray-900">{evento.titulo}</h4>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-600">
@@ -951,9 +934,7 @@ function EventosGlobales({
                         evento.tipoEvento
                       )}`}
                     >
-                      {evento.tipoEvento === "tecnicos"
-                        ? "Reunión"
-                        : "Encuentro"}
+                      {evento.tipoEvento === "tecnicos" ? "Reunión" : "Encuentro"}
                     </span>
                   </div>
                 </div>
@@ -969,15 +950,22 @@ function EventosGlobales({
 // ============ COMPONENTE PRINCIPAL ============
 export default function MisReportesPage() {
   const { user } = useAuth();
-  const { comunidades, loading: loadingComunidades } = useCargarComunidades(
-    user?.uid
-  );
-  const { actividades, semanaActiva, loading: loadingAgenda } =
-    useCargaAgendaSemanal(user?.uid);
+
+  const { comunidades, loading: loadingComunidades, error: errorComunidades } =
+    useCargarComunidades(user?.uid);
+
+  const {
+    actividades,
+    semanaActiva,
+    loading: loadingAgenda,
+    error: errorAgenda,
+  } = useCargaAgendaSemanal(user?.uid);
+
   const {
     eventosConfirmados,
     eventosHistorico,
     loading: loadingEventos,
+    error: errorEventos,
   } = useCargaEventosGlobales(user?.uid);
 
   const [comunidadSeleccionada, setComunidadSeleccionada] = useState("");
@@ -985,12 +973,13 @@ export default function MisReportesPage() {
     participantes,
     fechas,
     loading: loadingAsistencia,
-  } = useDatosAsistencia(user?.uid, comunidadSeleccionada);
+    error: errorAsistencia,
+  } = useDatosAsistencia(comunidadSeleccionada);
 
   const [procesando, setProcesando] = useState(false);
-  const [conteoParticipantes, setConteoParticipantes] = useState<
-    Map<string, number>
-  >(new Map());
+  const [conteoParticipantes, setConteoParticipantes] = useState<Map<string, number>>(
+    new Map()
+  );
 
   useEffect(() => {
     const cargarConteos = async () => {
@@ -1040,17 +1029,11 @@ export default function MisReportesPage() {
 
         fechas.forEach((fecha) => {
           fila[fecha] =
-            p.asistencias[fecha] === true
-              ? 1
-              : p.asistencias[fecha] === false
-              ? 0
-              : "";
+            p.asistencias[fecha] === true ? 1 : p.asistencias[fecha] === false ? 0 : "";
         });
 
-        const { presentes, total } = {
-          presentes: Object.values(p.asistencias).filter((v) => v).length,
-          total: Object.values(p.asistencias).length,
-        };
+        const presentes = Object.values(p.asistencias).filter(Boolean).length;
+        const total = Object.values(p.asistencias).length;
         fila["Total"] = `${presentes}/${total}`;
 
         return fila;
@@ -1058,24 +1041,19 @@ export default function MisReportesPage() {
 
       const worksheet = XLSX.utils.json_to_sheet(datos);
       const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(
-        workbook,
-        worksheet,
-        comunidadSeleccionada
-      );
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Asistencia");
 
       const buffer = XLSX.write(workbook, {
         bookType: "xlsx",
         type: "array",
       });
+
       const file = new Blob([buffer], {
         type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       });
 
       const comunidad = comunidades.find((c) => c.id === comunidadSeleccionada);
-      saveAs(file, `Asistencia_${comunidad?.nombre}.xlsx`);
-
-      alert("Archivo exportado correctamente");
+      saveAs(file, `Asistencia_${comunidad?.nombre || "Comunidad"}.xlsx`);
     } catch (error) {
       alert("Error al exportar");
       console.error(error);
@@ -1095,14 +1073,26 @@ export default function MisReportesPage() {
     );
   }
 
+  const errorGeneral = errorComunidades || errorAgenda || errorEventos;
+
+  if (errorGeneral) {
+    return (
+      <div className="min-h-screen bg-gray-50 p-6">
+        <div className="max-w-4xl mx-auto">
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <p className="text-red-800 font-medium">❌ {errorGeneral}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-7xl mx-auto space-y-8">
         {/* Encabezado */}
         <div>
-          <h1 className="text-4xl font-bold text-gray-900">
-            📊 Mis Reportes
-          </h1>
+          <h1 className="text-4xl font-bold text-gray-900">📊 Mis Reportes</h1>
           <p className="text-gray-600 mt-1">
             Visualiza tu agenda semanal, eventos globales y asistencia por comunidad
           </p>
@@ -1110,40 +1100,29 @@ export default function MisReportesPage() {
 
         {/* SECCIÓN 1: AGENDA SEMANAL */}
         <div className="space-y-4">
-          <h2 className="text-2xl font-bold text-gray-900">
-            📅 Agenda Semanal
-          </h2>
-          {loadingAgenda ? (
-            <div className="flex items-center justify-center p-8">
-              <p className="text-gray-600">Cargando agenda...</p>
-            </div>
-          ) : (
-            <AgendaSemanal actividades={actividades} semanaActiva={semanaActiva} />
-          )}
+          <h2 className="text-2xl font-bold text-gray-900">📅 Agenda Semanal</h2>
+          <AgendaSemanal actividades={actividades} semanaActiva={semanaActiva} />
         </div>
 
         {/* SECCIÓN 2: EVENTOS GLOBALES */}
         <div className="space-y-4">
-          <h2 className="text-2xl font-bold text-gray-900">
-            🌍 Eventos Globales
-          </h2>
-          {loadingEventos ? (
-            <div className="flex items-center justify-center p-8">
-              <p className="text-gray-600">Cargando eventos...</p>
-            </div>
-          ) : (
-            <EventosGlobales
-              eventosConfirmados={eventosConfirmados}
-              eventosHistorico={eventosHistorico}
-            />
-          )}
+          <h2 className="text-2xl font-bold text-gray-900">🌍 Eventos Globales</h2>
+          <EventosGlobales
+            eventosConfirmados={eventosConfirmados}
+            eventosHistorico={eventosHistorico}
+          />
         </div>
 
         {/* SECCIÓN 3: ASISTENCIA POR COMUNIDAD */}
         <div className="space-y-6">
-          <h2 className="text-2xl font-bold text-gray-900">
-            👥 Asistencia por Comunidad
-          </h2>
+          <h2 className="text-2xl font-bold text-gray-900">👥 Asistencia por Comunidad</h2>
+
+          {/* Errores de asistencia */}
+          {errorAsistencia && (
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+              <p className="text-yellow-800 font-medium">⚠️ {errorAsistencia}</p>
+            </div>
+          )}
 
           {/* Comunidades */}
           {comunidades.length === 0 ? (
@@ -1186,8 +1165,7 @@ export default function MisReportesPage() {
                   participantes={participantes}
                   fechas={fechas}
                   comunidadNombre={
-                    comunidades.find((c) => c.id === comunidadSeleccionada)
-                      ?.nombre || ""
+                    comunidades.find((c) => c.id === comunidadSeleccionada)?.nombre || ""
                   }
                   onExportar={handleExportarExcel}
                   procesando={procesando}
