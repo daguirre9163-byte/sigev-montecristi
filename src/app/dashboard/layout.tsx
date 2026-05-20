@@ -155,6 +155,14 @@ function Sidebar({ sidebarOpen, setSidebarOpen, role, onLogout }: SidebarProps) 
             </MenuItem>
 
             <MenuItem
+              href="/dashboard/participantestodo"
+              icon={<Users size={18} />}
+              onClick={() => setSidebarOpen(false)}
+            >
+              Gestión Participantes
+            </MenuItem>
+
+            <MenuItem
               href="/dashboard/admin/comunidades"
               icon={<Globe size={18} />}
               onClick={() => setSidebarOpen(false)}
